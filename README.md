@@ -38,7 +38,7 @@ For local development, use this checkout's absolute directory as `target`.
 Compiled `lib/` files are included in Git and release archives; installation
 requires no build scripts. Restart Harness after replacing an installed version.
 The published package is [@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh).
-Use a versioned target such as `@rsrsai/dsh@0.1.1` to pin an installation.
+Use a versioned target such as `@rsrsai/dsh@0.1.2` to pin an installation.
 
 ## Behavior
 
