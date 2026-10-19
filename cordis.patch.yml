@@ -1,4 +1,4 @@
 - insert:
     - id: respire-memory
-      name: '@rsrsai/respire-dsh'
+      name: '@rsrsai/dsh'
       config: {}

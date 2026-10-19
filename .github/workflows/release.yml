@@ -20,16 +20,24 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - run: npm run verify:package
       - run: npm run release:package
+      - name: Publish to npm with provenance
+        shell: bash
+        run: |
+          tag=latest
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then tag=next; fi
+          npm publish ./*.tgz --access public --provenance --tag "$tag"
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

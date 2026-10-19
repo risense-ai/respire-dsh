@@ -1,10 +1,14 @@
 {
-  "name": "@rsrsai/respire-dsh",
-  "version": "0.1.0",
+  "name": "@rsrsai/dsh",
+  "version": "0.1.1",
   "description": "Native Respire memory plugin for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
   "author": "risense-ai",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/risense-ai/respire-dsh.git"

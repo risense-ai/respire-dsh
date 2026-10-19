@@ -30,14 +30,15 @@ In Harness, ask the agent to invoke `plugin_manager` with:
 ```json
 {
   "action": "install_bundle",
-  "target": "git+https://github.com/risense-ai/respire-dsh.git#v0.1.0"
+  "target": "@rsrsai/dsh"
 }
 ```
 
 For local development, use this checkout's absolute directory as `target`.
 Compiled `lib/` files are included in Git and release archives; installation
 requires no build scripts. Restart Harness after replacing an installed version.
-No npm registry publication is required for Git installation.
+The published package is [@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh).
+Use a versioned target such as `@rsrsai/dsh@0.1.1` to pin an installation.
 
 ## Behavior
 
@@ -121,10 +122,16 @@ Harness 0.2.1-rc.2 API. `package-lock.json` locks the verification dependencies.
 CI runs type checking, build, tests, distribution checks, and generated-file
 consistency on Linux, macOS, and Windows. To release, update `package.json` and
 the lockfile, rebuild and commit `lib/`, then push `v<package version>`.
-The release workflow reuses the full CI matrix before publishing an installable
-`.tgz` and SHA-256 checksum to GitHub Releases. Ordinary main/PR pushes do not
-publish. This distribution needs only the repository's `GITHUB_TOKEN`; npm
-credentials and account changes are not required.
+The release workflow reuses the full CI matrix before publishing `@rsrsai/dsh`
+to npm with provenance, then uploads the same `.tgz` and SHA-256 checksum to
+GitHub Releases. Stable versions use `latest`; prereleases use `next`.
+Ordinary main/PR pushes do not publish.
+
+npm publishing uses GitHub OIDC, not a stored npm token. After the initial
+authenticated publish, configure the package's Trusted Publisher with owner
+`risense-ai`, repository `respire-dsh`, workflow `release.yml`, and permission
+to run `npm publish`. Leave the environment blank. The workflow requires
+`id-token: write` and a GitHub-hosted runner.
 
 ## References
 
