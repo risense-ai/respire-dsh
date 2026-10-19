@@ -1,0 +1,9 @@
+/node_modules/
+/*.tgz
+/coverage/
+/docs/app-asar/
+/docs/dsh-skill/
+/tools/
+/.verification/
+/.serena/
+/SHA256SUMS
