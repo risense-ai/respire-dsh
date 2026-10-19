@@ -1,5 +1,58 @@
 # Respire for DeepSeek Harness
 
+**npm 包：[@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh)** ·
+[中文安装步骤](#中文安装) · [English installation](#install)
+
+## 中文安装
+
+需要 Node.js 24+、DeepSeek Harness **0.2.1-rc.2** 和已安装的 `rsrs`。
+插件从 npm 安装到 Harness 当前 profile，通过组合包配置启用。
+
+### 1. 准备 Respire 引擎
+
+如果尚未安装 `rsrs`，先在终端执行：
+
+```sh
+npm install -g @rsrsai/cli@latest
+rsrs --version
+rsrs --client-only status --json
+```
+
+通过 `rsrs` 的交互流程完成账号配置、解锁记忆库，并确保宿主 runtime 正在运行。
+已有可用的 `rsrs` 环境可跳过此步。
+
+### 2. 在 Harness 中安装 npm 组合包
+
+把下面这句话发给 **Harness 内的助手**：
+
+```text
+请使用 plugin_manager 的 install_bundle 安装 npm 组合包 @rsrsai/dsh，并确认 respire-memory 已启用。
+```
+
+对应工具参数如下；需要固定版本时将 `target` 改为 `@rsrsai/dsh@0.1.2`：
+
+```json
+{
+  "action": "install_bundle",
+  "target": "@rsrsai/dsh"
+}
+```
+
+这里的 `@rsrsai/cli` 是引擎，`@rsrsai/dsh` 是 Harness 插件。
+仅在普通终端运行 `npm install @rsrsai/dsh` 不会自动将插件接入 Harness profile。
+
+### 3. 从之前的 Git 安装迁移
+
+如果已安装旧组合包 `@rsrsai/respire-dsh`，先在 Harness 插件管理中移除旧组合包，
+再按上面的步骤安装 `@rsrsai/dsh`。若提示仍在使用，先停用旧组合包再移除；
+若管理器要求停止 profile，则按其提示停止后再操作。
+保留现有记忆库、账号和 `rsrs` 配置，无需重新创建。
+
+安装完成后重启 Harness，在插件管理中确认只有一条 `respire-memory`，
+来源为 `@rsrsai/dsh` 且已启用。npm 安装与模块加载已验证；桌面完整对话链路尚未验收。
+
+## Overview
+
 Native TypeScript memory plugin for DeepSeek Harness. It registers stable rules
 with `systemPrompt.section`, recalls memory through `agent/pre-step`, and checks
 for new findings through `agent/turn-stopping`. Respire (`rsrs`) owns storage,
