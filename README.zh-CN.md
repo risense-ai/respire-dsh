@@ -4,6 +4,34 @@
 
 **npm 包：[@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh)**
 
+## 让 AI 安装：复制这段提示词
+
+将下面整段发送给 **DeepSeek Harness 内的助手**：
+
+```text
+请在我的 DeepSeek Harness 当前 profile 安装 Respire 记忆插件 @rsrsai/dsh。
+先阅读并遵循 https://github.com/risense-ai/respire-dsh/blob/main/README.zh-CN.md，
+然后实际执行安装，不要只解释步骤。
+
+检查 Node.js 24+、Harness 兼容性（已验证版本为 0.2.1-rc.2）和 plugin_manager 是否可用。
+复用现有 rsrs 环境；仅在缺失时，在该 profile 的执行环境中运行 npm install -g @rsrsai/cli@latest。
+运行 rsrs --version 和 rsrs --client-only status --json。
+若需要登录、解锁记忆库、配置模型或处理宿主 runtime，请指出具体待办，让我在 rsrs 中完成；
+不要在聊天中索取秘密，也不要自行管理 runtime。
+
+先检查已安装组合包。若有旧包 @rsrsai/respire-dsh，通过插件管理先停用并移除旧组合包，
+再安装替代包；管理器要求停止或重启 profile 时，先告诉我所需操作。
+保留记忆库、账号、rsrs 配置和无关插件。若新包已存在，避免重复安装。
+
+调用 plugin_manager，参数为 {"action":"install_bundle","target":"@rsrsai/dsh"}。
+安装 npm 组合包，不使用 Git 依赖，也不能仅在终端 npm install 就算完成。
+确认只有一条已启用的 respire-memory，来源为 @rsrsai/dsh。
+告诉我何时重启 Harness，然后在新对话中验证召回。
+先向我要一条无敏感内容的测试事实，再验证存储及其实际记录；
+在另一个召回成功且未显式存储成功的回合验证收尾提醒。
+最后报告安装版本、实际执行的检查和仍需我完成的操作。未实际观察到完整链路前，不要声称已验通。
+```
+
 ## 中文安装
 
 需要 Node.js 24+、DeepSeek Harness **0.2.1-rc.2** 和已安装的 `rsrs`。

@@ -4,6 +4,39 @@ English | [简体中文](https://github.com/risense-ai/respire-dsh/blob/main/REA
 
 **npm package: [@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh)**
 
+## Install with AI — copy this prompt
+
+Paste the entire prompt into **the assistant inside DeepSeek Harness**:
+
+```text
+Install the Respire memory plugin @rsrsai/dsh in my current DeepSeek Harness
+profile. Read and follow https://github.com/risense-ai/respire-dsh#readme,
+then perform the installation rather than only explaining the steps.
+
+Check Node.js 24+, Harness compatibility (validated against 0.2.1-rc.2), and
+plugin_manager availability. Reuse my existing rsrs environment; if rsrs is
+missing, install it with npm install -g @rsrsai/cli@latest in the profile's
+execution environment. Run rsrs --version and rsrs --client-only status --json.
+Report any required login, library unlock, model setup, or host runtime action
+for me to complete in rsrs; do not request secrets in chat or manage the runtime.
+
+Inspect installed bundles first. If the old @rsrsai/respire-dsh bundle exists,
+disable and remove that bundle through plugin management before installing its
+replacement. If the manager requires a profile stop or restart, tell me the
+required action before proceeding. Preserve my memory library, account, rsrs
+configuration, and unrelated plugins. Avoid duplicate installation if the new
+bundle is already present.
+
+Use plugin_manager with {"action":"install_bundle","target":"@rsrsai/dsh"}.
+Install the npm bundle, not a Git dependency or only a terminal npm install.
+Verify that exactly one enabled respire-memory entry comes from @rsrsai/dsh.
+Tell me when to restart Harness, then verify recall in a new conversation.
+Ask me for a non-sensitive test fact before testing storage and check the actual
+record. Verify the stop reminder in a separate recall turn without a successful
+explicit store. Report the installed version, checks actually performed, and
+remaining user actions; do not claim end-to-end success before observing it.
+```
+
 ## Overview
 
 Native TypeScript memory plugin for DeepSeek Harness. It registers stable rules
