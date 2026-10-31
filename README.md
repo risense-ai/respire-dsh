@@ -1,5 +1,12 @@
 # Respire for DeepSeek Harness
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/icon-respire-ai-memory.svg">
+    <img src="docs/icon-respire-ai-memory-light.svg" alt="Respire AI memory icon" width="112">
+  </picture>
+</p>
+
 English | [简体中文](https://github.com/risense-ai/respire-dsh/blob/main/README.zh-CN.md)
 
 **npm package: [@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh)**
@@ -77,7 +84,7 @@ For local development, use this checkout's absolute directory as `target`.
 Compiled `lib/` files are included in Git and release archives; installation
 requires no build scripts. Restart Harness after replacing an installed version.
 The published package is [@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh).
-Use a versioned target such as `@rsrsai/dsh@0.1.2` to pin an installation.
+Use a versioned target such as `@rsrsai/dsh@0.1.3` to pin an installation.
 
 `@rsrsai/cli` is the engine; `@rsrsai/dsh` is the Harness plugin. Running
 `npm install @rsrsai/dsh` in a regular terminal does not activate the plugin in
@@ -190,4 +197,7 @@ to run `npm publish`. Leave the environment blank. The workflow requires
 - [respire-dimcode](https://github.com/risense-ai/respire-dimcode): behavior reference.
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): host APIs.
 
-The icon is original artwork distributed under this repository's MIT license.
+The plugin icon is a single adaptive SVG: it shows the light variant by default
+and switches to the dark variant when the Harness theme requests a dark color
+scheme. The standalone light and dark variants live under `docs/`. The icon is
+original artwork distributed under this repository's MIT license.

@@ -1,5 +1,12 @@
 # Respire for DeepSeek Harness
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/icon-respire-ai-memory.svg">
+    <img src="docs/icon-respire-ai-memory-light.svg" alt="Respire AI 记忆图标" width="112">
+  </picture>
+</p>
+
 [English](README.md) | 简体中文
 
 **npm 包：[@rsrsai/dsh](https://www.npmjs.com/package/@rsrsai/dsh)**
@@ -58,7 +65,7 @@ rsrs --client-only status --json
 请使用 plugin_manager 的 install_bundle 安装 npm 组合包 @rsrsai/dsh，并确认 respire-memory 已启用。
 ```
 
-对应工具参数如下；需要固定版本时将 `target` 改为 `@rsrsai/dsh@0.1.2`：
+对应工具参数如下；需要固定版本时将 `target` 改为 `@rsrsai/dsh@0.1.3`：
 
 ```json
 {
@@ -114,7 +121,7 @@ rsrs --client-only status --json
 
 本地开发时，将 `target` 设为本仓库的绝对目录。
 Git 和发布归档均包含编译后的 `lib/`，安装不需要构建脚本。
-替换已安装版本后重启 Harness；固定版本可使用 `@rsrsai/dsh@0.1.2`。
+替换已安装版本后重启 Harness；固定版本可使用 `@rsrsai/dsh@0.1.3`。
 
 ## 行为
 
@@ -196,4 +203,6 @@ environment 留空。工作流需要 `id-token: write` 和 GitHub 托管 runner�
 - [respire-dimcode](https://github.com/risense-ai/respire-dimcode)：行为参考。
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：宿主 API。
 
-图标为原创作品，按本仓库 MIT 许可证分发。
+插件图标为单个自适应 SVG：默认显示亮色变体，当 Harness 主题要求暗色配色时
+切换为暗色变体。独立的亮色与暗色变体存放在 `docs/` 下。图标为原创作品，
+按本仓库 MIT 许可证分发。

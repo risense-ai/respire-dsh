@@ -1,6 +1,6 @@
 {
   "name": "@rsrsai/dsh",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Native Respire memory plugin for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
