@@ -52,7 +52,7 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.match(textOf(result), /项目使用原生插件/)
   assert.equal(result.messages[1].source.kind, 'respire')
   assert.deepEqual(h.calls[1], ['--client-only', 'recall', 'Respire 原生插件', '--limit', '5', '--titles', '--json'])
-  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /记忆是参考资料/)
+  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Memory is reference material/)
   await h.ctx.fiber.dispose()
 })
 
@@ -90,7 +90,7 @@ test('/nomem skips only automatic recall; skill prefix is removed', async () => 
 test('explicit store produces a receipt and suppresses the stop reminder', async () => {
   const h = harness({}, () => ({ status: 'ok', summary: { id: hit.id } }))
   const result = await h.step([human('记：项目采用 TypeScript')])
-  assert.match(textOf(result), /【respire·已存】/)
+  assert.match(textOf(result), /【respire · stored】/)
   assert.equal(h.calls[1][1], 'remember')
   assert.ok(!h.calls[1].includes('--force'))
   await h.stop()
@@ -101,7 +101,7 @@ test('pending store remains uncommitted and is never retried', async () => {
   const h = harness({}, () => ({ status: 'pending', items: [{ name: 'abcdef01', value: '已有项目约定' }] }))
   const user = human('remember: 项目采用 TypeScript')
   const result = await h.step([user])
-  assert.match(textOf(result), /尚未写入/)
+  assert.match(textOf(result), /Nothing was written/)
   assert.match(textOf(result), /已有项目约定/)
   await h.step([user])
   assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
@@ -109,8 +109,8 @@ test('pending store remains uncommitted and is never retried', async () => {
 
 test('empty store and suspected credentials never reach remember or recall', async () => {
   const h = harness()
-  assert.match(textOf(await h.step([human('记：')])), /内容为空/)
-  assert.match(textOf(await h.step([human('记：password: synthetic-example')], 2)), /疑似凭据/)
+  assert.match(textOf(await h.step([human('记：')])), /content is empty|The content is empty/)
+  assert.match(textOf(await h.step([human('记：password: synthetic-example')], 2)), /contains a credential/)
   await h.step([human('api_key=synthetic-example')], 3)
   assert.equal(h.calls.length, 1)
 })
@@ -147,7 +147,7 @@ test('each agent has independent state and reminder cadence', async () => {
 test('failed store is visible and does not leak child error text', async () => {
   const h = harness({}, () => new Error('password=synthetic-example'))
   const result = await h.step([human('记：项目采用 TypeScript')])
-  assert.match(textOf(result), /落库未确认/)
+  assert.match(textOf(result), /store unconfirmed/)
   assert.doesNotMatch(textOf(result), /synthetic-example/)
 })
 
@@ -179,7 +179,7 @@ test('config rejects non-integral limits and unsafe deadlines', () => {
 
 test('title results respect limits, threshold, budget, and superseded markers', () => {
   const doc = { status: 'ok', details: [hit, { ...hit, score: 0.1 }, { ...hit, superseded_by: 'new-id' }] }
-  assert.match(recallText(doc, 5, 0.5, 1500), /已被取代/)
+  assert.match(recallText(doc, 5, 0.5, 1500), /superseded/)
   assert.equal((recallText(doc, 1, 0, 1500).match(/abcdef01/g) ?? []).length, 1)
   assert.equal(recallText({ status: 'ok', details: [{ ...hit, title: 'x'.repeat(2000) }] }, 5, 0, 200), '')
   assert.equal(recallText({ status: 'skip' }, 5, 0, 1500), '')

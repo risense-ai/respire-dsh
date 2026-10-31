@@ -22,7 +22,7 @@ then perform the installation rather than only explaining the steps.
 
 Check Node.js 24+, Harness compatibility (validated against 0.2.1-rc.2), and
 plugin_manager availability. Reuse my existing rsrs environment; if rsrs is
-missing, install it with npm install -g @rsrsai/cli@latest in the profile's
+missing, install it with npm install -g rsrs-cli@latest in the profile's
 execution environment. Run rsrs --version and rsrs --client-only status --json.
 Report any required login, library unlock, model setup, or host runtime action
 for me to complete in rsrs; do not request secrets in chat or manage the runtime.
@@ -61,7 +61,7 @@ Other Harness versions have not been validated.
 Install the engine separately if needed:
 
 ```sh
-npm install -g @rsrsai/cli@latest
+npm install -g rsrs-cli@latest
 rsrs --version
 rsrs --client-only status --json
 ```
