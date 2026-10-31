@@ -21,7 +21,7 @@
 然后实际执行安装，不要只解释步骤。
 
 检查 Node.js 24+、Harness 兼容性（已验证版本为 0.2.1-rc.2）和 plugin_manager 是否可用。
-复用现有 rsrs 环境；仅在缺失时，在该 profile 的执行环境中运行 npm install -g @rsrsai/cli@latest。
+复用现有 rsrs 环境；仅在缺失时，在该 profile 的执行环境中运行 npm install -g rsrs-cli@latest。
 运行 rsrs --version 和 rsrs --client-only status --json。
 若需要登录、解锁记忆库、配置模型或处理宿主 runtime，请指出具体待办，让我在 rsrs 中完成；
 不要在聊天中索取秘密，也不要自行管理 runtime。
@@ -49,7 +49,7 @@
 如果尚未安装 `rsrs`，先在终端执行：
 
 ```sh
-npm install -g @rsrsai/cli@latest
+npm install -g rsrs-cli@latest
 rsrs --version
 rsrs --client-only status --json
 ```
@@ -101,7 +101,7 @@ DeepSeek Harness 原生 TypeScript 记忆插件。通过 `systemPrompt.section` 
 需要时单独安装引擎：
 
 ```sh
-npm install -g @rsrsai/cli@latest
+npm install -g rsrs-cli@latest
 rsrs --version
 rsrs --client-only status --json
 ```

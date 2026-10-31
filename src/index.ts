@@ -119,18 +119,18 @@ export function apply(ctx: Context, options: Config = {}): void {
           const status = await call(['status'])
           state.ready = status.status === 'ok'
           const summary = record(status.summary)
-          if (record(summary?.session)?.has_session === false) additions.push(contextMessage('【respire·状态】尚未登录。账户和同步请按 rsrs status 的结果配置。'))
-          if (typeof summary?.local_alive === 'number' && summary.local_alive < 10) additions.push(contextMessage('【respire·状态】记忆库内容较少，召回为空可能正常。可显式保存已确认的项目约定；语义模型由 rsrs 按需配置。'))
-          if (summary?.unlocked === false) additions.push(contextMessage('【respire·状态】记忆库尚未解锁，请用户按 rsrs 的交互流程解锁，不收集密码。'))
+          if (record(summary?.session)?.has_session === false) additions.push(contextMessage('【respire · status】Not signed in. Configure the account and sync per the rsrs status output.'))
+          if (typeof summary?.local_alive === 'number' && summary.local_alive < 10) additions.push(contextMessage('【respire · status】The store has few records; empty recall may be normal. Explicitly save confirmed project agreements; the semantic model is configured by rsrs as needed.'))
+          if (summary?.unlocked === false) additions.push(contextMessage('【respire · status】The store is locked. Ask the user to unlock it via the rsrs interactive flow; never collect passwords.'))
         } catch (error) {
           if (combined.aborted) return decision
           ctx.logger.warn(`respire: status ${error instanceof RsrsError ? error.code : 'failed'}`)
-          additions.push(contextMessage('【respire·状态】引擎或 runtime 不可用。请核实 rsrs --version 和 rsrs --client-only status；缺引擎时可安装 @rsrsai/cli。当前任务继续。'))
+          additions.push(contextMessage('【respire · status】Engine or runtime unavailable. Verify rsrs --version and rsrs --client-only status; if the engine is missing, install rsrs-cli. The current task continues.'))
         }
       }
       if (SKIP_PREFIX.test(prompt)) continue
       if (containsSecret(prompt)) {
-        additions.push(contextMessage('【respire·已跳过】输入含疑似凭据，不发送给记忆引擎。请只提供去除秘密的事实或安全的位置指针。'))
+        additions.push(contextMessage('【respire · skipped】The input looks like it contains a credential and was not sent to the memory engine. Provide only the fact with the secret removed, or a safe location pointer.'))
         continue
       }
       const store = STORE_PREFIX.exec(prompt)
@@ -138,7 +138,7 @@ export function apply(ctx: Context, options: Config = {}): void {
         if (store) {
           const content = prompt.slice(store[0].length).trim()
           if (!content) {
-            additions.push(contextMessage('【respire·未存】存储内容为空，请用户提供要保存的事实。'))
+            additions.push(contextMessage('【respire · not stored】The content is empty; ask the user for the fact to save.'))
             continue
           }
           const title = titleOf(content)
@@ -158,8 +158,8 @@ export function apply(ctx: Context, options: Config = {}): void {
         const code = error instanceof RsrsError ? error.code : 'invalid-output'
         ctx.logger.warn(`respire: ${store ? 'store' : 'recall'} ${code}`)
         additions.push(contextMessage(store
-          ? `【respire·落库未确认】${code}。可能已写入，请先查库核实；勿自动重试或声称成功。`
-          : `【respire·召回不可用】${code}。未获得记忆，请依据当前材料继续。`))
+          ? `【respire · store unconfirmed】${code}. It may have been written; verify against the store first; never retry automatically or claim success.`
+          : `【respire · recall unavailable】${code}. No memory was obtained; continue with the current materials.`))
       }
     }
     if (combined.aborted || !additions.length) return decision
@@ -173,6 +173,6 @@ export function apply(ctx: Context, options: Config = {}): void {
       || !current.hadUser || current.stored || current.reminded || config.storeNudgeEvery === 0
       || state.rounds % config.storeNudgeEvery !== 0) return
     current.reminded = true
-    agent.steer(contextMessage('【respire·收尾检查，仅本轮一次】若本轮产生新的事实、决定、约定或教训，请先查同题、读候选，再更新或选定 parent 落库；标题用事实句。若已存储或无需存储，直接结束，不重复回答。'))
+    agent.steer(contextMessage('【respire · wrap-up check, this round only】If this turn produced new facts, decisions, agreements, or lessons, check same-subject candidates, read them, then update or store with a chosen parent; use a fact-sentence title. If already stored or nothing needs storing, end directly and do not repeat the answer.'))
   })
 }
