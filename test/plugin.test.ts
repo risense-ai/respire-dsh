@@ -253,6 +253,40 @@ test('read-back verifies the full record: wrong id, tampered tail, exact match, 
   }
 })
 
+test('read-back schema-checks the returned entry: entry id and content type must prove identity', async () => {
+  const id = '66666666-6666-4666-8666-666666666666'
+  const content = '项目采用 TypeScript'
+  const title = titleOf(content)
+  const showWith = entry => ({ status: 'ok', summary: { id }, details: { entry } })
+  const cases = [
+    // summary.id is right but the entry itself points at another record
+    { show: showWith({ id: '77777777-7777-4777-8777-777777777777', title, content }), expect: /DIFFERENT/ },
+    // entry.id missing entirely
+    { show: showWith({ title, content }), expect: /DIFFERENT/ },
+    // a single-element array coerces to exactly the sent content — String() comparison alone would pass
+    { show: showWith({ id, title, content: [content] }), expect: /DIFFERENT/ },
+    // numeric content
+    { show: showWith({ id, title, content: 42 }), expect: /DIFFERENT/ },
+    // object content
+    { show: showWith({ id, title, content: { a: 1 } }), expect: /DIFFERENT/ },
+    // a non-string title is not a title match either
+    { show: showWith({ id, title: [title], content }), expect: /DIFFERENT/ },
+  ]
+  for (const { show, expect } of cases) {
+    const h = harness({}, args => args[1] === 'remember' ? { status: 'ok', summary: { id } } : show)
+    const result = await h.step([human(`记：${content}`)])
+    // the legal receipt keeps its Saved claim; only the verification is refused
+    assert.match(textOf(result), /【respire · stored】Saved:/)
+    assert.match(textOf(result), expect)
+    assert.doesNotMatch(textOf(result), /full content match/)
+    // never rewritten, read-only: exactly one remember and one show
+    assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+    assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
+    await h.stop()
+    assert.equal(h.notices.length, 0)
+  }
+})
+
 test('missing or invalid ids are unknown receipts; only fail claims not-accepted; skip stays not-stored', () => {
   const missing = storeText({ status: 'ok' }, 'title')
   assert.equal(missing.stored, false)
@@ -275,6 +309,48 @@ test('missing or invalid ids are unknown receipts; only fail claims not-accepted
   assert.equal(unrecognized.stored, false)
   assert.match(unrecognized.text, /store unconfirmed/)
   assert.match(unrecognized.text, /unknown/)
+})
+
+test('record ids outside the engine whitelist (UUID or long hex) are unknown, never a write credential', () => {
+  // dashes-only, wrong grouping/length, plain short hex, path fragments — the old loose
+  // [a-f\d-]{8,} class accepted all of these as "written"
+  for (const id of ['--------', 'abcd----', 'abcdef01-0000-4', 'abcdef01', '../../etc/passwd', 'abcdefgh']) {
+    for (const status of ['ok', 'warn']) {
+      const receipt = storeText({ status, summary: { id } }, 'title')
+      assert.equal(receipt.stored, false, `${status} receipt with id ${id} must not confirm a write`)
+      assert.match(receipt.text, /store unconfirmed/)
+      assert.match(receipt.text, /unknown/)
+      assert.doesNotMatch(receipt.text, /Saved/)
+    }
+    // recall hits carrying such ids are dropped instead of advertised
+    assert.equal(recallText({ status: 'ok', details: [{ ...hit, id }] }, 5, 0, 1500), '')
+  }
+  // non-string ids stay unknown
+  for (const id of [12345678, ['abcdef01-0000-4000-8000-000000000000'], { v: 1 }, null, true]) {
+    const receipt = storeText({ status: 'ok', summary: { id } }, 'title')
+    assert.equal(receipt.stored, false)
+    assert.match(receipt.text, /store unconfirmed/)
+  }
+  // engine-shaped ids still pass: UUID, 16-hex, 32-hex
+  assert.equal(storeText({ status: 'ok', summary: { id: 'abcdef01-0000-4000-8000-000000000000' } }, 'title').stored, true)
+  assert.equal(storeText({ status: 'ok', summary: { id: 'abcdef0100004000' } }, 'title').stored, true)
+  assert.equal(storeText({ status: 'warn', summary: { id: '0123456789abcdef0123456789abcdef' } }, 'title').stored, true)
+})
+
+test('an all-dashes id in a full flow claims no write, sets no stored flag, triggers no read-back', async () => {
+  const h = harness({}, () => ({ status: 'ok', summary: { id: '--------' } }))
+  const result = await h.step([human('记：项目采用 TypeScript')])
+  assert.match(textOf(result), /store unconfirmed/)
+  assert.match(textOf(result), /never retry automatically/)
+  assert.doesNotMatch(textOf(result), /Saved/)
+  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+  assert.equal(h.calls.filter(args => args[1] === 'show').length, 0)
+  await h.stop()
+  // stored was never set, so the wrap-up reminder still fires — and nothing re-sends remember on its own
+  assert.equal(h.notices.length, 1)
+  await h.step([human('记：项目采用 TypeScript')], 2)
+  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 2)
+  assert.equal(h.calls.filter(args => args[1] === 'show').length, 0)
 })
 
 test('credential filter handles private keys and leaves ordinary facts intact', () => {
