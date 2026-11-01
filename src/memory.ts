@@ -13,6 +13,9 @@ When wrapping up, store new facts, decisions, agreements, or lessons per the rul
 export const STORE_PREFIX = /^(?:记|存|记录|记住|remember)\s*[:：]\s*/i
 export const SKIP_PREFIX = /^(?:\/nomem|#nomem)(?=\s|$)/i
 export const SKILL_PREFIX = /^\$\s*skill\s*:\s*\S+\s*/i
+// The engine mints record ids as UUIDs or long hex strings; anything else in a receipt —
+// dashes only, wrong grouping or length, path fragments — is not a write credential.
+const RECORD_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,})$/i
 
 export function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -35,7 +38,7 @@ export function recallText(doc: Envelope, limit: number, threshold: number, budg
   let count = 0
   for (const item of doc.details) {
     const hit = record(item)
-    if (!hit || typeof hit.id !== 'string' || !/^[a-f\d-]{8,}$/i.test(hit.id)
+    if (!hit || typeof hit.id !== 'string' || !RECORD_ID.test(hit.id)
       || typeof hit.title !== 'string' || typeof hit.score !== 'number'
       || !Number.isFinite(hit.score) || hit.score < threshold) continue
     const next = `\n- [${hit.score.toFixed(2)}] ${hit.title.replace(/[\r\n]+/g, ' ')} (${hit.id.slice(0, 8)})${hit.superseded_by ? ' → superseded, read the replacing record first' : ''}`
@@ -48,8 +51,27 @@ export function recallText(doc: Envelope, limit: number, threshold: number, budg
 
 export function storeText(doc: Envelope, title: string): { text: string; stored: boolean } {
   const summary = record(doc.summary)
-  if (doc.status === 'ok' && typeof summary?.id === 'string' && /^[a-f\d-]{8,}$/i.test(summary.id)) {
-    return { text: `【respire · stored】Saved: ${title} (${summary.id}). The title is provisional; refine it when needed; do not write the same record again.`, stored: true }
+  const id = typeof summary?.id === 'string' && RECORD_ID.test(summary.id) ? summary.id : undefined
+  if (doc.status === 'ok' && id) {
+    return { text: `【respire · stored】Saved: ${title} (${id}). The title is provisional; refine it when needed; do not write the same record again.`, stored: true }
+  }
+  if (doc.status === 'warn' && id) {
+    // warn arrives AFTER the write committed (unresolvable parent, post-remember hook warnings):
+    // it is written — report the warnings, never re-send, never call it a failure.
+    const warns = (doc.errors ?? []).filter((value): value is string => typeof value === 'string').slice(0, 3).join('; ').slice(0, 160)
+    return {
+      text: `【respire · stored】Saved with warnings${warns ? ` (${warns})` : ''}: ${title} (${id}). The record was written — inspect it with rsrs --client-only show ${id.slice(0, 8)} if the warning matters; do not write the same record again.`,
+      stored: true,
+    }
+  }
+  // An ok/warn receipt without a usable id cannot confirm or deny the write: the outcome is
+  // UNKNOWN. Keep the read-only verification and no-retry guarantees, but never call it
+  // "not accepted" — the record may already sit in the store.
+  if (doc.status === 'ok' || doc.status === 'warn') {
+    return {
+      text: '【respire · store unconfirmed】The receipt carried no valid id, so the write outcome is unknown — the record may already have been written. Verify read-only against the store; never retry automatically or claim success.',
+      stored: false,
+    }
   }
   if (doc.status === 'pending') {
     const candidates = (doc.items ?? []).slice(0, 5).flatMap(item => {
@@ -57,10 +79,29 @@ export function storeText(doc: Envelope, title: string): { text: string; stored:
       return typeof candidate?.name === 'string' && typeof candidate.value === 'string'
         ? [`- ${candidate.name}: ${candidate.value}`] : []
     })
+    const actions = (doc.actions ?? []).filter((value): value is string => typeof value === 'string' && value.trim() !== '').slice(0, 6)
+    const guide = actions.length
+      ? ['Engine-suggested next actions (prefer merge > attach > new; read candidate bodies first, never force blindly):', ...actions.map(value => `  ${value}`)]
+      : []
     return {
-      text: ['【respire · store pending】Nothing was written. Read the candidates and decide to update, merge, or attach with a chosen parent; do not force or write blindly.', ...candidates].join('\n'),
+      text: ['【respire · store pending】Nothing was written. Read the candidates and decide to update, merge, or attach with a chosen parent; do not force or write blindly.', ...candidates, ...guide].join('\n'),
       stored: false,
     }
   }
-  return { text: '【respire · store failed】No valid success receipt was returned. Verify against the store first; do not retry automatically.', stored: false }
+  if (doc.status === 'fail') {
+    return {
+      text: '【respire · store failed】The engine did not accept the write. Read the engine output, adjust the content or arguments, and store again explicitly; do not retry automatically.',
+      stored: false,
+    }
+  }
+  if (doc.status === 'skip') {
+    return {
+      text: '【respire · not stored】The engine skipped this store; nothing was written. Follow the engine output for the reason before storing explicitly again.',
+      stored: false,
+    }
+  }
+  return {
+    text: '【respire · store unconfirmed】The receipt was not recognized, so the write outcome is unknown — the record may already have been written. Verify read-only against the store; never retry automatically or claim success.',
+    stored: false,
+  }
 }

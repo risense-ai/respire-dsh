@@ -4,11 +4,18 @@ import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { apply, Config } from '../lib/index.js'
-import { containsSecret, recallText, storeText } from '../lib/memory.js'
+import { containsSecret, recallText, storeText, titleOf } from '../lib/memory.js'
 
 const hit = { id: 'abcdef01-0000-4000-8000-000000000000', title: '项目使用原生插件', score: 0.82 }
 const human = text => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 const textOf = decision => decision.messages.flatMap(message => message.content).map(block => block.text ?? '').join('\n')
+
+// answer() returns a receipt document (exit 0), { exitCode, doc } for a non-zero exit, or an Error.
+function replyOf(value) {
+  if (value instanceof Error) return { error: value, exitCode: 0, doc: null }
+  if (value && typeof value === 'object' && typeof value.exitCode === 'number' && 'doc' in value) return value
+  return { error: null, exitCode: 0, doc: value }
+}
 
 function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })) {
   const ctx = new Context()
@@ -24,12 +31,12 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
     spawn: spec => {
       const args = spec.argv.slice(1)
       calls.push(args)
-      const doc = args[1] === 'status'
+      const reply = replyOf(args[1] === 'status'
         ? { status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } }
-        : answer(args)
+        : answer(args))
       return {
-        done: doc instanceof Error ? Promise.reject(doc) : Promise.resolve({ exitCode: 0, signal: null }),
-        collected: { stdout: { readFrom: () => ({ text: JSON.stringify(doc), lossy: false }) } },
+        done: reply.error ? Promise.reject(reply.error) : Promise.resolve({ exitCode: reply.exitCode, signal: null }),
+        collected: { stdout: { readFrom: () => ({ text: JSON.stringify(reply.doc), lossy: false }) } },
         terminate() {},
         waitForExit: async () => true,
       }
@@ -185,6 +192,165 @@ test('title results respect limits, threshold, budget, and superseded markers', 
   assert.equal(recallText({ status: 'skip' }, 5, 0, 1500), '')
   assert.throws(() => recallText({ status: 'ok', details: {} }, 5, 0, 1500))
   assert.equal(storeText({ status: 'ok' }, 'title').stored, false)
+})
+
+test('store receipts follow the result-state contract (warn written, pending relays actions)', () => {
+  // warn + valid id = WRITTEN after commit — never a failure, never a re-send
+  const warned = storeText({ status: 'warn', summary: { id: '22222222-2222-4222-8222-222222222222' }, errors: ['parent (cause) cannot be resolved; stored independently'] }, 'warned title')
+  assert.equal(warned.stored, true)
+  assert.match(warned.text, /Saved with warnings/)
+  assert.match(warned.text, /parent \(cause\) cannot be resolved/)
+  assert.match(warned.text, /do not write the same record again/)
+  // pending keeps engine-suggested actions (merge > attach > new), not just parent/force
+  const pending = storeText({ status: 'pending', items: [{ name: 'aaaabbbb', value: 'similarity=88% title=stub candidate' }], actions: ['rsrs remember "<combined content>" --merge-ids "aaaabbbb"', 'rsrs remember "<content>" --force to write as new entry'] }, 'pending title')
+  assert.equal(pending.stored, false)
+  assert.match(pending.text, /Nothing was written/)
+  assert.match(pending.text, /aaaabbbb: similarity=88%/)
+  assert.match(pending.text, /--merge-ids/)
+  assert.match(pending.text, /--force/)
+})
+
+test('warn receipt (exit 2) on the production --client-only path stores once, reads back once, stops steering', async () => {
+  const id = '33333333-3333-4333-8333-333333333333'
+  const content = '项目采用 TypeScript，修改 src 之后必须先执行 npm run build 再运行测试'
+  const h = harness({}, args => args[1] === 'remember'
+    ? { exitCode: 2, doc: { status: 'warn', summary: { id }, errors: ['parent (cause) cannot be resolved; stored independently'] } }
+    : { status: 'ok', summary: { id }, details: { entry: { id, title: titleOf(content), content } } })
+  const result = await h.step([human(`记：${content}`)])
+  // the engine saw the exact production argument shape: --client-only remember ... --json
+  assert.equal(h.calls[1][0], '--client-only')
+  assert.equal(h.calls[1][1], 'remember')
+  assert.equal(h.calls[1].at(-1), '--json')
+  assert.match(textOf(result), /Saved with warnings/)
+  assert.match(textOf(result), /id, title and full content match/)
+  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+  assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
+  await h.stop()
+  assert.equal(h.notices.length, 0)
+})
+
+test('read-back verifies the full record: wrong id, tampered tail, exact match, failed show', async () => {
+  const id = '44444444-4444-4444-8444-444444444444'
+  const content = '项目采用 TypeScript，测试导入的是 lib 编译产物，因此修改 src 之后必须先执行 npm run build，然后才能运行测试套件'
+  const title = titleOf(content)
+  const cases = [
+    // show returns a different id: the entry shown is not provably the one written
+    { show: { status: 'ok', summary: { id: '55555555-5555-4555-8555-555555555555' }, details: { entry: { id, title, content } } }, expect: /DIFFERENT/, verified: false },
+    // identical first 40 characters with a tampered tail: prefix sampling would pass, full comparison must not
+    { show: { status: 'ok', summary: { id }, details: { entry: { id, title, content: `${content.slice(0, 40)}……尾部已被篡改` } } }, expect: /DIFFERENT/, verified: false },
+    // exact id + title + full content
+    { show: { status: 'ok', summary: { id }, details: { entry: { id, title, content } } }, expect: /id, title and full content match/, verified: true },
+    // a failed show keeps the Saved receipt and reports unavailable
+    { show: new Error('show failed'), expect: /Read-back unavailable/, verified: false },
+  ]
+  for (const { show, expect, verified } of cases) {
+    const h = harness({}, args => args[1] === 'remember' ? { status: 'ok', summary: { id } } : show)
+    const result = await h.step([human(`记：${content}`)])
+    assert.match(textOf(result), /【respire · stored】Saved:/)
+    assert.match(textOf(result), expect)
+    if (!verified) assert.doesNotMatch(textOf(result), /full content match/)
+    assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
+  }
+})
+
+test('read-back schema-checks the returned entry: entry id and content type must prove identity', async () => {
+  const id = '66666666-6666-4666-8666-666666666666'
+  const content = '项目采用 TypeScript'
+  const title = titleOf(content)
+  const showWith = entry => ({ status: 'ok', summary: { id }, details: { entry } })
+  const cases = [
+    // summary.id is right but the entry itself points at another record
+    { show: showWith({ id: '77777777-7777-4777-8777-777777777777', title, content }), expect: /DIFFERENT/ },
+    // entry.id missing entirely
+    { show: showWith({ title, content }), expect: /DIFFERENT/ },
+    // a single-element array coerces to exactly the sent content — String() comparison alone would pass
+    { show: showWith({ id, title, content: [content] }), expect: /DIFFERENT/ },
+    // numeric content
+    { show: showWith({ id, title, content: 42 }), expect: /DIFFERENT/ },
+    // object content
+    { show: showWith({ id, title, content: { a: 1 } }), expect: /DIFFERENT/ },
+    // a non-string title is not a title match either
+    { show: showWith({ id, title: [title], content }), expect: /DIFFERENT/ },
+  ]
+  for (const { show, expect } of cases) {
+    const h = harness({}, args => args[1] === 'remember' ? { status: 'ok', summary: { id } } : show)
+    const result = await h.step([human(`记：${content}`)])
+    // the legal receipt keeps its Saved claim; only the verification is refused
+    assert.match(textOf(result), /【respire · stored】Saved:/)
+    assert.match(textOf(result), expect)
+    assert.doesNotMatch(textOf(result), /full content match/)
+    // never rewritten, read-only: exactly one remember and one show
+    assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+    assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
+    await h.stop()
+    assert.equal(h.notices.length, 0)
+  }
+})
+
+test('missing or invalid ids are unknown receipts; only fail claims not-accepted; skip stays not-stored', () => {
+  const missing = storeText({ status: 'ok' }, 'title')
+  assert.equal(missing.stored, false)
+  assert.match(missing.text, /store unconfirmed/)
+  assert.match(missing.text, /unknown/)
+  assert.match(missing.text, /never retry automatically/)
+  assert.doesNotMatch(missing.text, /did not accept/)
+  const garbage = storeText({ status: 'warn', summary: { id: '../../etc/passwd' } }, 'title')
+  assert.equal(garbage.stored, false)
+  assert.match(garbage.text, /store unconfirmed/)
+  assert.doesNotMatch(garbage.text, /store failed|did not accept/)
+  const failed = storeText({ status: 'fail', errors: ['parent missing'] }, 'title')
+  assert.equal(failed.stored, false)
+  assert.match(failed.text, /did not accept/)
+  const skipped = storeText({ status: 'skip' }, 'title')
+  assert.equal(skipped.stored, false)
+  assert.match(skipped.text, /not stored/)
+  assert.doesNotMatch(skipped.text, /unknown/)
+  const unrecognized = storeText({ status: 'confused' }, 'title')
+  assert.equal(unrecognized.stored, false)
+  assert.match(unrecognized.text, /store unconfirmed/)
+  assert.match(unrecognized.text, /unknown/)
+})
+
+test('record ids outside the engine whitelist (UUID or long hex) are unknown, never a write credential', () => {
+  // dashes-only, wrong grouping/length, plain short hex, path fragments — the old loose
+  // [a-f\d-]{8,} class accepted all of these as "written"
+  for (const id of ['--------', 'abcd----', 'abcdef01-0000-4', 'abcdef01', '../../etc/passwd', 'abcdefgh']) {
+    for (const status of ['ok', 'warn']) {
+      const receipt = storeText({ status, summary: { id } }, 'title')
+      assert.equal(receipt.stored, false, `${status} receipt with id ${id} must not confirm a write`)
+      assert.match(receipt.text, /store unconfirmed/)
+      assert.match(receipt.text, /unknown/)
+      assert.doesNotMatch(receipt.text, /Saved/)
+    }
+    // recall hits carrying such ids are dropped instead of advertised
+    assert.equal(recallText({ status: 'ok', details: [{ ...hit, id }] }, 5, 0, 1500), '')
+  }
+  // non-string ids stay unknown
+  for (const id of [12345678, ['abcdef01-0000-4000-8000-000000000000'], { v: 1 }, null, true]) {
+    const receipt = storeText({ status: 'ok', summary: { id } }, 'title')
+    assert.equal(receipt.stored, false)
+    assert.match(receipt.text, /store unconfirmed/)
+  }
+  // engine-shaped ids still pass: UUID, 16-hex, 32-hex
+  assert.equal(storeText({ status: 'ok', summary: { id: 'abcdef01-0000-4000-8000-000000000000' } }, 'title').stored, true)
+  assert.equal(storeText({ status: 'ok', summary: { id: 'abcdef0100004000' } }, 'title').stored, true)
+  assert.equal(storeText({ status: 'warn', summary: { id: '0123456789abcdef0123456789abcdef' } }, 'title').stored, true)
+})
+
+test('an all-dashes id in a full flow claims no write, sets no stored flag, triggers no read-back', async () => {
+  const h = harness({}, () => ({ status: 'ok', summary: { id: '--------' } }))
+  const result = await h.step([human('记：项目采用 TypeScript')])
+  assert.match(textOf(result), /store unconfirmed/)
+  assert.match(textOf(result), /never retry automatically/)
+  assert.doesNotMatch(textOf(result), /Saved/)
+  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+  assert.equal(h.calls.filter(args => args[1] === 'show').length, 0)
+  await h.stop()
+  // stored was never set, so the wrap-up reminder still fires — and nothing re-sends remember on its own
+  assert.equal(h.notices.length, 1)
+  await h.step([human('记：项目采用 TypeScript')], 2)
+  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 2)
+  assert.equal(h.calls.filter(args => args[1] === 'show').length, 0)
 })
 
 test('credential filter handles private keys and leaves ordinary facts intact', () => {

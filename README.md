@@ -48,7 +48,7 @@ remaining user actions; do not claim end-to-end success before observing it.
 
 Native TypeScript memory plugin for DeepSeek Harness. It registers stable rules
 with `systemPrompt.section`, recalls memory through `agent/pre-step`, and checks
-for new findings through `agent/turn-stopping`. Respire (`rsrs`) owns storage,
+for new findings through `agent/turn-stopping` — at most once per request (a one-round bounded steer, no engine query at stop, skipped whenever this session never confirmed a working engine). Respire (`rsrs`) owns storage,
 deduplication, encryption, model inference, accounts, and synchronization.
 
 ## Install
@@ -105,7 +105,7 @@ memory library, account, and `rsrs` configuration.
 | --- | --- |
 | First accepted user input per live agent | Read engine status; report missing runtime, locked library, missing session, or a small library when applicable |
 | Accepted user message | `recall --titles --json`; inject at most 5 titles into the same model step |
-| `记：`, `存：`, `记录：`, `记住：`, `remember:` | Attempt `remember` once, then inject a success, pending, or failure receipt |
+| `记：`, `存：`, `记录：`, `记住：`, `remember:` | Attempt `remember` once, then inject a receipt per the result-state contract: `ok`/`warn` with a valid id (engine whitelist: UUID or long hex) are WRITTEN (warn carries engine warnings — never a failure, never re-sent, recognized on the production `--client-only` call path) and verified by a `show` read-back comparing the id, title, and full content — the entry's own `entry.id` must match and `title`/`content` must be strings, so a different or missing entry id and an array/number/object content report a mismatch (verified / mismatch / unavailable reported honestly); `ok`/`warn` without a whitelisted id is UNKNOWN — verify read-only, never re-send; `fail` means the engine did not accept the write; `skip` and `pending` mean nothing was written (`pending` relays candidate ids plus engine-suggested actions, merge > attach > new); timeouts and unreadable receipts are unconfirmed — automatic retries forbidden |
 | `/nomem` or `#nomem` followed by whitespace/end | Skip that message's automatic recall; status and stop checks remain enabled |
 | `$skill: name` prefix | Remove the skill selector from the recall query |
 | Natural stop | At most one reminder per agent/turn; a successful explicit store suppresses it |
