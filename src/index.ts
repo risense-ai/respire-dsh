@@ -148,23 +148,27 @@ export function apply(ctx: Context, options: Config = {}): void {
           state.ready = true
           let text = result.text
           if (result.stored && typeof record(doc.summary)?.id === 'string') {
-            // Write read-back (R11): verify the committed entry honestly; a failed read-back
-            // never blocks the receipt and never triggers a retry.
+            // Write read-back (R11): verify the committed entry honestly and in full — id, title,
+            // and the complete content (whitespace-stripped), never a sampled prefix. A failed
+            // read-back never blocks the receipt and never triggers a retry.
             const id = String((record(doc.summary) as Record<string, unknown>).id)
             let verdict: 'verified' | 'mismatch' | 'unavailable' = 'unavailable'
             try {
               const shown = await call(['show', id])
               const entry = record(record(shown.details)?.entry)
               if (shown.status === 'ok' && entry) {
+                // A well-formed entry that fails to prove identity or equality is a mismatch;
+                // only an unreadable or entry-less show stays unavailable.
+                const idOk = record(shown.summary)?.id === id
                 const titleOk = !title || entry.title === title
-                const bodyOk = !content.slice(0, 40) || String(entry.content ?? '').includes(content.slice(0, 40))
-                verdict = titleOk && bodyOk ? 'verified' : 'mismatch'
+                const bodyOk = String(entry.content ?? '').trim() === content.trim()
+                verdict = idOk && titleOk && bodyOk ? 'verified' : 'mismatch'
               }
             } catch { verdict = 'unavailable' }
             text += verdict === 'verified'
-              ? ' Write verified by read-back (entry exists; title and content match).'
+              ? ' Write verified by read-back (id, title and full content match).'
               : verdict === 'mismatch'
-                ? ` Read-back shows a DIFFERENT title/content than sent — inspect rsrs --client-only show ${id.slice(0, 8)} before refining the title.`
+                ? ` Read-back shows a DIFFERENT id, title, or content than sent — inspect rsrs --client-only show ${id.slice(0, 8)} before refining the title.`
                 : ` Read-back unavailable — if it matters, verify with rsrs --client-only show ${id.slice(0, 8)}.`
           }
           additions.push(contextMessage(text))

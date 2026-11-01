@@ -49,6 +49,16 @@ test('malformed, truncated, failed, and pending CLI output are distinguished', a
   assert.equal((await runRsrs(provider({ output: '{"status":"pending"}', exitCode: 1 }), 'rsrs', [], process.cwd(), new AbortController().signal, 1000)).status, 'pending')
 })
 
+test('production --client-only remember warn (exit 2) is a receipt, not a failure', async () => {
+  const output = '{"status":"warn","summary":{"id":"33333333-3333-4333-8333-333333333333"},"errors":["parent (cause) cannot be resolved; stored independently"]}'
+  const args = ['--client-only', 'remember', '项目采用 TypeScript', '--title', '项目采用 TypeScript', '--importance', 'important', '--json']
+  const doc = await runRsrs(provider({ output, exitCode: 2 }), 'rsrs', args, process.cwd(), new AbortController().signal, 1000)
+  assert.equal(doc.status, 'warn')
+  assert.equal(doc.summary.id, '33333333-3333-4333-8333-333333333333')
+  // the allowance is scoped to remember: warn on any other subcommand still fails
+  await assert.rejects(runRsrs(provider({ output, exitCode: 2 }), 'rsrs', ['--client-only', 'recall', 'query', '--json'], process.cwd(), new AbortController().signal, 1000), /failed/)
+})
+
 test('deadline and user cancellation terminate the managed command', async () => {
   const keepAlive = setTimeout(() => {}, 1000)
   try {

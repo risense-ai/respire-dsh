@@ -4,11 +4,18 @@ import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { apply, Config } from '../lib/index.js'
-import { containsSecret, recallText, storeText } from '../lib/memory.js'
+import { containsSecret, recallText, storeText, titleOf } from '../lib/memory.js'
 
 const hit = { id: 'abcdef01-0000-4000-8000-000000000000', title: '项目使用原生插件', score: 0.82 }
 const human = text => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 const textOf = decision => decision.messages.flatMap(message => message.content).map(block => block.text ?? '').join('\n')
+
+// answer() returns a receipt document (exit 0), { exitCode, doc } for a non-zero exit, or an Error.
+function replyOf(value) {
+  if (value instanceof Error) return { error: value, exitCode: 0, doc: null }
+  if (value && typeof value === 'object' && typeof value.exitCode === 'number' && 'doc' in value) return value
+  return { error: null, exitCode: 0, doc: value }
+}
 
 function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })) {
   const ctx = new Context()
@@ -24,12 +31,12 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
     spawn: spec => {
       const args = spec.argv.slice(1)
       calls.push(args)
-      const doc = args[1] === 'status'
+      const reply = replyOf(args[1] === 'status'
         ? { status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } }
-        : answer(args)
+        : answer(args))
       return {
-        done: doc instanceof Error ? Promise.reject(doc) : Promise.resolve({ exitCode: 0, signal: null }),
-        collected: { stdout: { readFrom: () => ({ text: JSON.stringify(doc), lossy: false }) } },
+        done: reply.error ? Promise.reject(reply.error) : Promise.resolve({ exitCode: reply.exitCode, signal: null }),
+        collected: { stdout: { readFrom: () => ({ text: JSON.stringify(reply.doc), lossy: false }) } },
         terminate() {},
         waitForExit: async () => true,
       }
@@ -201,6 +208,73 @@ test('store receipts follow the result-state contract (warn written, pending rel
   assert.match(pending.text, /aaaabbbb: similarity=88%/)
   assert.match(pending.text, /--merge-ids/)
   assert.match(pending.text, /--force/)
+})
+
+test('warn receipt (exit 2) on the production --client-only path stores once, reads back once, stops steering', async () => {
+  const id = '33333333-3333-4333-8333-333333333333'
+  const content = '项目采用 TypeScript，修改 src 之后必须先执行 npm run build 再运行测试'
+  const h = harness({}, args => args[1] === 'remember'
+    ? { exitCode: 2, doc: { status: 'warn', summary: { id }, errors: ['parent (cause) cannot be resolved; stored independently'] } }
+    : { status: 'ok', summary: { id }, details: { entry: { id, title: titleOf(content), content } } })
+  const result = await h.step([human(`记：${content}`)])
+  // the engine saw the exact production argument shape: --client-only remember ... --json
+  assert.equal(h.calls[1][0], '--client-only')
+  assert.equal(h.calls[1][1], 'remember')
+  assert.equal(h.calls[1].at(-1), '--json')
+  assert.match(textOf(result), /Saved with warnings/)
+  assert.match(textOf(result), /id, title and full content match/)
+  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+  assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
+  await h.stop()
+  assert.equal(h.notices.length, 0)
+})
+
+test('read-back verifies the full record: wrong id, tampered tail, exact match, failed show', async () => {
+  const id = '44444444-4444-4444-8444-444444444444'
+  const content = '项目采用 TypeScript，测试导入的是 lib 编译产物，因此修改 src 之后必须先执行 npm run build，然后才能运行测试套件'
+  const title = titleOf(content)
+  const cases = [
+    // show returns a different id: the entry shown is not provably the one written
+    { show: { status: 'ok', summary: { id: '55555555-5555-4555-8555-555555555555' }, details: { entry: { id, title, content } } }, expect: /DIFFERENT/, verified: false },
+    // identical first 40 characters with a tampered tail: prefix sampling would pass, full comparison must not
+    { show: { status: 'ok', summary: { id }, details: { entry: { id, title, content: `${content.slice(0, 40)}……尾部已被篡改` } } }, expect: /DIFFERENT/, verified: false },
+    // exact id + title + full content
+    { show: { status: 'ok', summary: { id }, details: { entry: { id, title, content } } }, expect: /id, title and full content match/, verified: true },
+    // a failed show keeps the Saved receipt and reports unavailable
+    { show: new Error('show failed'), expect: /Read-back unavailable/, verified: false },
+  ]
+  for (const { show, expect, verified } of cases) {
+    const h = harness({}, args => args[1] === 'remember' ? { status: 'ok', summary: { id } } : show)
+    const result = await h.step([human(`记：${content}`)])
+    assert.match(textOf(result), /【respire · stored】Saved:/)
+    assert.match(textOf(result), expect)
+    if (!verified) assert.doesNotMatch(textOf(result), /full content match/)
+    assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
+  }
+})
+
+test('missing or invalid ids are unknown receipts; only fail claims not-accepted; skip stays not-stored', () => {
+  const missing = storeText({ status: 'ok' }, 'title')
+  assert.equal(missing.stored, false)
+  assert.match(missing.text, /store unconfirmed/)
+  assert.match(missing.text, /unknown/)
+  assert.match(missing.text, /never retry automatically/)
+  assert.doesNotMatch(missing.text, /did not accept/)
+  const garbage = storeText({ status: 'warn', summary: { id: '../../etc/passwd' } }, 'title')
+  assert.equal(garbage.stored, false)
+  assert.match(garbage.text, /store unconfirmed/)
+  assert.doesNotMatch(garbage.text, /store failed|did not accept/)
+  const failed = storeText({ status: 'fail', errors: ['parent missing'] }, 'title')
+  assert.equal(failed.stored, false)
+  assert.match(failed.text, /did not accept/)
+  const skipped = storeText({ status: 'skip' }, 'title')
+  assert.equal(skipped.stored, false)
+  assert.match(skipped.text, /not stored/)
+  assert.doesNotMatch(skipped.text, /unknown/)
+  const unrecognized = storeText({ status: 'confused' }, 'title')
+  assert.equal(unrecognized.stored, false)
+  assert.match(unrecognized.text, /store unconfirmed/)
+  assert.match(unrecognized.text, /unknown/)
 })
 
 test('credential filter handles private keys and leaves ordinary facts intact', () => {
