@@ -187,6 +187,22 @@ test('title results respect limits, threshold, budget, and superseded markers', 
   assert.equal(storeText({ status: 'ok' }, 'title').stored, false)
 })
 
+test('store receipts follow the result-state contract (warn written, pending relays actions)', () => {
+  // warn + valid id = WRITTEN after commit — never a failure, never a re-send
+  const warned = storeText({ status: 'warn', summary: { id: '22222222-2222-4222-8222-222222222222' }, errors: ['parent (cause) cannot be resolved; stored independently'] }, 'warned title')
+  assert.equal(warned.stored, true)
+  assert.match(warned.text, /Saved with warnings/)
+  assert.match(warned.text, /parent \(cause\) cannot be resolved/)
+  assert.match(warned.text, /do not write the same record again/)
+  // pending keeps engine-suggested actions (merge > attach > new), not just parent/force
+  const pending = storeText({ status: 'pending', items: [{ name: 'aaaabbbb', value: 'similarity=88% title=stub candidate' }], actions: ['rsrs remember "<combined content>" --merge-ids "aaaabbbb"', 'rsrs remember "<content>" --force to write as new entry'] }, 'pending title')
+  assert.equal(pending.stored, false)
+  assert.match(pending.text, /Nothing was written/)
+  assert.match(pending.text, /aaaabbbb: similarity=88%/)
+  assert.match(pending.text, /--merge-ids/)
+  assert.match(pending.text, /--force/)
+})
+
 test('credential filter handles private keys and leaves ordinary facts intact', () => {
   assert.equal(containsSecret('-----BEGIN RSA PRIVATE KEY-----'), true)
   assert.equal(containsSecret('项目使用 TypeScript，凭据保存在系统密钥环'), false)

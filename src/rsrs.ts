@@ -5,6 +5,8 @@ export interface Envelope {
   summary?: Record<string, unknown>
   details?: unknown
   items?: unknown[]
+  errors?: unknown[]
+  actions?: unknown[]
 }
 
 export class RsrsError extends Error {
@@ -68,7 +70,10 @@ export async function runRsrs(
       throw new RsrsError('invalid-output')
     }
     // A pending write is a valid result; it is never retried or reported as committed.
-    if (outcome.exitCode !== 0 && doc.status !== 'pending') throw new RsrsError('failed')
+    // remember exits 2 with status:"warn" AFTER committing (unresolvable parent, hook warnings):
+    // a warn receipt carries a real id and must reach the caller as written-with-warnings, never as a failure.
+    if (outcome.exitCode !== 0 && doc.status !== 'pending'
+      && !(args[0] === 'remember' && doc.status === 'warn')) throw new RsrsError('failed')
     return doc as Envelope
   } catch (error) {
     if (signal.aborted) throw new RsrsError('cancelled')

@@ -4,6 +4,8 @@ export interface Envelope {
     summary?: Record<string, unknown>;
     details?: unknown;
     items?: unknown[];
+    errors?: unknown[];
+    actions?: unknown[];
 }
 export declare class RsrsError extends Error {
     readonly code: 'unavailable' | 'timeout' | 'cancelled' | 'failed' | 'invalid-output';
