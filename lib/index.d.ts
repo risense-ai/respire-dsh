@@ -1,10 +1,11 @@
 import type { Context } from '@deepseek-ai/cordis';
+import type { ContextFormed } from '@deepseek-ai/dsh-llm';
 import z from '@deepseek-ai/schemastery';
 declare module '@deepseek-ai/dsh-llm' {
     interface MessageSourceMap {
         respire: {
             kind: 'respire';
-        };
+        } & ContextFormed;
     }
 }
 export declare const name = "respire";
