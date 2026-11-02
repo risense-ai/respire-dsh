@@ -99,11 +99,12 @@ export function apply(ctx: Context, options: Config = {}): void {
   if (typeof toolHost.tools?.guard !== 'function') throw new Error('respire: this Harness version must support tools.guard()')
   const commandOf = (exec: MemoryExecution) => ['bash', 'pwsh', 'terminal_send'].includes(exec.name)
     ? record(exec.arguments)?.[exec.name === 'terminal_send' ? 'text' : 'command'] : undefined
+  const shellOf = (exec: MemoryExecution) => exec.name === 'bash' ? 'bash' : exec.name === 'pwsh' ? 'powershell' : 'unknown'
   const checks = new WeakMap<MemoryExecution, { command: unknown, reason?: string }>()
   const unverified = 'Respire blocked this tool call before execution: parent validation did not complete. Keep placement pending; for important updates, attach the target first if it has no valid parent. DO NOT guess, force, downgrade, or automatically retry an earlier unknown write.'
   toolHost.tools.guard(exec => {
     if (memoryToolWrite(exec.name)) return MCP_WRITE_DENIAL
-    if (!memoryWrite(commandOf(exec), config.rsrsPath)) return
+    if (!memoryWrite(commandOf(exec), config.rsrsPath, shellOf(exec))) return
     const check = checks.get(exec)
     return check && check.command === commandOf(exec) ? check.reason : unverified
   })
@@ -112,7 +113,7 @@ export function apply(ctx: Context, options: Config = {}): void {
     if (decision.kind !== 'allow') return decision
     if (memoryToolWrite(exec.name)) return { kind: 'deny', reason: MCP_WRITE_DENIAL }
     const command = commandOf(exec)
-    const write = memoryWrite(command, config.rsrsPath)
+    const write = memoryWrite(command, config.rsrsPath, shellOf(exec))
     if (!write) return decision
     let reason = write.reason
     if (!reason && (write.parent || write.target)) {

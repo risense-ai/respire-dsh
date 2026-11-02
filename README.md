@@ -233,6 +233,13 @@ Use an explicit command through the guarded CLI tools instead; no automatic
 retry of an earlier unknown write is permitted. Other tool names pass unchanged.
 Opaque hashed or truncated MCP tool names cannot be mapped to raw basenames by this check.
 
+Known shell -c/-Command code arguments and active command substitutions are
+inspected only to recognize writes and deny the enclosing call. Simple leading
+NAME=value assignments cannot hide a recognized write. Ordinary quoted text
+without expansion remains text. Bash and PowerShell escaping are distinguished;
+terminal_send uses conservative checks because its persistent shell is unknown.
+No shell code is evaluated by this check.
+
 Known read commands and unrelated tools pass unchanged. Current remember/update
 metadata flags remain supported. Recognized writes in compound commands, command
 substitutions, wrappers or dynamic arguments are denied: use one explicit command
