@@ -127,7 +127,7 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   })
   assert.equal((await promotion.tool('pwsh', `rsrs update ${target} --importance important`)).kind, 'allow')
   assert.deepEqual(promotion.calls.map(args => args[2]), [target, parent])
-  for (const invalid of ['', 'none', target, null, 42]) {
+  for (const invalid of ['', 'none', target, target.toUpperCase(), target.slice(0, 8), null, 42]) {
     attached = invalid
     const before = promotion.calls.length, bodies = promotion.dispatched.length
     const denied = await promotion.tool('bash', `rsrs update ${target} --importance important`)

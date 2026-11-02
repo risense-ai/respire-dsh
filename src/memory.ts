@@ -139,7 +139,7 @@ export function currentParent(doc: Envelope, target: string): string | undefined
   const entry = record(record(doc.details)?.entry)
   const parent = entry?.parent_id
   return parentExists(doc, target) && typeof parent === 'string' && RECORD_ID.test(parent)
-    && parent !== entry?.id ? parent : undefined
+    && typeof entry?.id === 'string' && !entry.id.toLowerCase().startsWith(parent.toLowerCase()) ? parent : undefined
 }
 
 export const STORE_PREFIX = /^(?:记|存|记录|记住|remember)\s*[:：]\s*/i
