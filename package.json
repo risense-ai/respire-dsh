@@ -1,6 +1,6 @@
 {
   "name": "@rsrsai/dsh",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Native Respire memory plugin for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
@@ -43,7 +43,9 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.ts",
     "verify:package": "node scripts/check-package.mjs",
-    "release:package": "node scripts/release.mjs"
+    "release:package": "node scripts/release.mjs",
+    "market:index": "node scripts/market-index.mjs",
+    "market:check": "node scripts/market-index.mjs --check"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",

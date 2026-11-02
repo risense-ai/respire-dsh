@@ -37,6 +37,10 @@
 先向我要一条无敏感内容的测试事实，再验证存储及其实际记录；
 在另一个召回成功且未显式存储成功的回合验证收尾提醒。
 最后报告安装版本、实际执行的检查和仍需我完成的操作。未实际观察到完整链路前，不要声称已验通。
+
+安装验通后，请主动提出配置基于插件市场的更新：在 Harness 中启用「自定义插件市场」，
+添加索引源 https://raw.githubusercontent.com/risense-ai/respire-dsh/market-index/marketplace.json，
+并确认「发现」页的 Respire 卡片显示已装版本。未经我确认，不要安装任何更新。
 ```
 
 ## 中文安装
@@ -86,6 +90,64 @@ rsrs --client-only status --json
 
 安装完成后重启 Harness，在插件管理中确认只有一条 `respire-memory`，
 来源为 `@rsrsai/dsh` 且已启用。npm 安装与模块加载已验证；桌面完整对话链路尚未验收。
+
+## 通过插件市场更新
+
+npm registry 仍是版本来源；此外，本仓库发布 DeepSeek Harness 插件市场索引（format 1），
+由 `scripts/market-index.mjs` 从 npm registry 生成，每次打 tag 发版后由 release 工作流自动刷新：
+
+- `https://raw.githubusercontent.com/risense-ai/respire-dsh/market-index/marketplace.json`
+- GitHub 不可达时的镜像：`https://cdn.jsdelivr.net/gh/risense-ai/respire-dsh@market-index/marketplace.json`
+
+索引发布在专用的 `market-index` 分支：仓库为 `main` 配了要求 PR 的规则集，发版工作流无法直接提交到 main。
+索引列出所有已发布、既非预发布也未被弃用的版本，固定 npm registry，图标用同源相对路径，
+分支副本自足。Harness 使用前会校验索引，其内容视为第三方内容。jsDelivr 是第三方 CDN，可能滞后于
+raw 地址，以 raw 为准。
+
+该分支是生成物：每次刷新都 force-push 一个单提交，没有可审阅的历史；要看来源请审
+`scripts/market-index.mjs` 与 npm registry。维护者可用 **Market index** 工作流（手动触发或每周定时）
+或打 tag 发版来刷新。
+
+### 配置市场更新
+
+1. 在 Harness 打开 **插件**，在 **实验性插件** 旁点 **更多**，启用 **自定义插件市场**；随后出现 **发现** 页。
+2. 在 **发现** 页选择 **添加索引源**，粘贴上面的 URL。
+3. Respire 卡片会列出已发布版本；当最新兼容版本高于已装版本时，卡片标记 **有可用更新**。
+   索引只在打开或刷新页面时抓取并缓存 10 分钟，后台不轮询。
+4. 安装：打开条目的版本列表，选择 **安装**。第三方条目没有「一键更新」按钮——
+   安装新版本会先移除旧组合包再装新包，管理器完成后需重启 Harness；重启前运行中的进程仍持有旧模块。
+5. 重启后核验：插件页或 `dsh plugin --profile <profile> list` 显示新版本，profile 的
+   `package.json` 精确固定该版本。
+
+需要固定版本时运行 `dsh plugin --profile <profile> add @rsrsai/dsh@<版本号> --save-exact`
+（desktop profile 须用随包 CLI）；回滚同理，换成上一个版本。若坏版本导致 Harness 起不来，
+先退出 Harness（桌面进程独占 profile），用随包 CLI 执行命令后重启。
+撤回已发布版本先用 `npm deprecate @rsrsai/dsh@<版本号>` 弃用；下一次索引刷新
+（下一个 tag 发版、**Market index** 工作流，或运行 `node scripts/market-index.mjs` 后执行
+`bash scripts/publish-market-index.sh`）会将其移除。
+
+插件不会自行更新，也不会自行改动 Harness profile。Harness 插件管理执行安装/更新时会弹确认框；
+`dsh plugin` CLI 只执行你输入的命令。
+
+### 让 AI 配置更新
+
+把下面整段发给 **Harness 内的助手**：
+
+```text
+请为 Respire 记忆插件 @rsrsai/dsh 配置基于插件市场的更新检查。
+
+1. 读取 Harness 版本、profile 名称，以及 profile 的 package.json 中已装的 @rsrsai/dsh 版本。
+2. 若自定义插件市场未开启，启用之：插件 → 更多（实验性插件）→ 自定义插件市场。
+3. 添加插件市场索引源
+   https://raw.githubusercontent.com/risense-ai/respire-dsh/market-index/marketplace.json
+   若 raw.githubusercontent.com 不可达，改用
+   https://cdn.jsdelivr.net/gh/risense-ai/respire-dsh@market-index/marketplace.json
+4. 打开「发现」页，确认 Respire 卡片能加载，并显示已装版本或有可用更新；
+   把看到的版本列表报给我。
+5. 先不要安装或改动任何东西。告诉我：已装版本、最新兼容版本、你准备执行的步骤。
+   我确认后，再安装该版本（第三方条目会先移除旧组合包），并告诉我何时重启 Harness；
+   重启后核验已装版本。
+```
 
 ## 概述
 

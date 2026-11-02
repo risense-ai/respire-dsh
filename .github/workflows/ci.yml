@@ -31,5 +31,10 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run verify:package
+      - name: Check the market index generator parses
+        run: node --check scripts/market-index.mjs
+      - name: Check the market index publisher script
+        if: runner.os == 'Linux'
+        run: bash -n scripts/publish-market-index.sh
       - name: Verify committed runtime matches TypeScript sources
         run: git diff --exit-code -- lib
