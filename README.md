@@ -20,7 +20,7 @@ Install the Respire memory plugin @rsrsai/dsh in my current DeepSeek Harness
 profile. Read and follow https://github.com/risense-ai/respire-dsh#readme,
 then perform the installation rather than only explaining the steps.
 
-Check Node.js 24+, Harness compatibility (validated against 0.2.1-rc.2), and
+Check Node.js 24+, Harness compatibility (validated against 0.2.1-rc.5), and
 plugin_manager availability. Reuse my existing rsrs environment; if rsrs is
 missing, install it with npm install -g rsrs-cli@latest in the profile's
 execution environment. Run rsrs --version and rsrs --client-only status --json.
@@ -53,9 +53,9 @@ deduplication, encryption, model inference, accounts, and synchronization.
 
 ## Install
 
-Requires Node.js 24+, DeepSeek Harness **0.2.1-rc.2**, and an installed `rsrs` CLI.
+Requires Node.js 24+, DeepSeek Harness **0.2.1-rc.5**, and an installed `rsrs` CLI.
 The plugin uses the Harness `agents`, `systemPrompt`, `subprocess`, and
-`workingDirectory` services already provided by the standard desktop profile.
+`workingDirectory`, and `tools` services already provided by the standard desktop profile.
 Other Harness versions have not been validated.
 
 Install the engine separately if needed:
@@ -184,7 +184,7 @@ npm pack
 
 Tests exercise real Cordis event dispatch with a controlled subprocess service;
 they never write the user's memory library. Production targets the published
-Harness 0.2.1-rc.2 API. `package-lock.json` locks the verification dependencies.
+Harness 0.2.1-rc.5 API. `package-lock.json` locks the verification dependencies.
 
 CI runs type checking, build, tests, distribution checks, and generated-file
 consistency on Linux, macOS, and Windows. To release, update `package.json` and
@@ -209,3 +209,55 @@ The plugin icon is a single adaptive SVG: it shows the light variant by default
 and switches to the dark variant when the Harness theme requests a dark color
 scheme. The standalone light and dark variants live under `docs/`. The icon is
 original artwork distributed under this repository's MIT license.
+
+## Before-tool memory write checks
+
+The extension checks recognized literal rsrs writes before tool execution. It
+blocks important remember calls with missing or empty parents and all force calls.
+Every merge-ids request also needs an explicit parent, even when importance says
+trivial, because a merge can inherit importance. A nonempty literal parent
+ID must resolve through read-only `rsrs --client-only show <id> --json`; failure,
+cancellation or timeout blocks the shell call and leaves placement pending. This
+check uses the configured executable and never starts a runtime. Parent checks
+have a five-second deadline, leaving time for tool feedback and cleanup.
+
+Before update --importance important, the gate reads the target and verifies its
+current parent_id with a second show. An orphan or invalid/missing parent blocks
+the update; attach the record under a real parent first. Current rsrs update does
+not expose parent-changing flags; the gate rejects those unsupported options,
+without claiming they could otherwise perform a parent change.
+
+Known memory_remember and memory_update tool basenames, including server-qualified
+MCP names, are blocked because their target library cannot be bound to this CLI.
+Use an explicit command through the guarded CLI tools instead; no automatic
+retry of an earlier unknown write is permitted. Other tool names pass unchanged.
+Opaque hashed or truncated MCP tool names cannot be mapped to raw basenames by this check.
+
+Known shell -c/-Command code arguments and active command substitutions are
+inspected only to recognize writes and deny the enclosing call. Simple leading
+NAME=value assignments cannot hide a recognized write. Ordinary quoted text
+without expansion remains text. Bash and PowerShell escaping are distinguished;
+terminal_send uses conservative checks because its persistent shell is unknown.
+No shell code is evaluated by this check.
+
+Known read commands and unrelated tools pass unchanged. Current remember/update
+metadata flags remain supported. Recognized writes in compound commands, command
+substitutions, wrappers or dynamic arguments are denied: use one explicit command
+with literal arguments. A `--parent` phrase inside the memory body is not an option.
+This is a targeted check, not a shell sandbox: arbitrary scripts, aliases, hidden
+executables and terminal fragments are outside its coverage. It does not grant
+permissions, choose a parent, write a record, or authorize an automatic retry. The
+model MUST still read policy and candidate bodies, justify placement, respect
+read-only/off modes, and verify actual writes. Unknown issued writes MUST NOT be
+retried automatically or reported as successful.
+
+Coverage: Harness `bash`, `pwsh`, and `terminal_send` text, including nested calls.
+The asynchronous pre-execute check is followed by a synchronous monotonic guard;
+a later allow decision cannot erase a denial or reuse validation for changed arguments.
+Harness must provide `tools.guard()` (validated with 0.2.1-rc.5); an incompatible
+host fails plugin initialization rather than silently disabling enforcement.
+Setting `enabled: false` disables this integration and its gate together.
+
+Checks cover arguments observed at this gate. Extensions that replace arguments
+after the guard or execute outside the host tool pipeline are outside this scope.
+The CLI/Core must enforce the parent invariant atomically at the actual write.

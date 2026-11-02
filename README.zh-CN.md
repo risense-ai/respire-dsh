@@ -20,7 +20,7 @@
 先阅读并遵循 https://github.com/risense-ai/respire-dsh/blob/main/README.zh-CN.md，
 然后实际执行安装，不要只解释步骤。
 
-检查 Node.js 24+、Harness 兼容性（已验证版本为 0.2.1-rc.2）和 plugin_manager 是否可用。
+检查 Node.js 24+、Harness 兼容性（已验证版本为 0.2.1-rc.5）和 plugin_manager 是否可用。
 复用现有 rsrs 环境；仅在缺失时，在该 profile 的执行环境中运行 npm install -g rsrs-cli@latest。
 运行 rsrs --version 和 rsrs --client-only status --json。
 若需要登录、解锁记忆库、配置模型或处理宿主 runtime，请指出具体待办，让我在 rsrs 中完成；
@@ -41,7 +41,7 @@
 
 ## 中文安装
 
-需要 Node.js 24+、DeepSeek Harness **0.2.1-rc.2** 和已安装的 `rsrs`。
+需要 Node.js 24+、DeepSeek Harness **0.2.1-rc.5** 和已安装的 `rsrs`。
 插件从 npm 安装到 Harness 当前 profile，通过组合包配置启用。
 
 ### 1. 准备 Respire 引擎
@@ -193,7 +193,7 @@ npm pack
 ```
 
 测试使用真实 Cordis 事件分发与受控 subprocess 服务，不写用户记忆库。
-生产目标为已发布的 Harness 0.2.1-rc.2 API，`package-lock.json` 锁定验证依赖。
+生产目标为已发布的 Harness 0.2.1-rc.5 API，`package-lock.json` 锁定验证依赖。
 
 CI 在 Linux、macOS 和 Windows 执行类型检查、构建、测试、发布包检查与生成文件一致性检查。
 发布时更新 `package.json` 和 lockfile，重新构建并提交 `lib/`，再推送 `v<package version>`。
@@ -213,3 +213,36 @@ environment 留空。工作流需要 `id-token: write` 和 GitHub 托管 runner�
 插件图标为单个自适应 SVG：默认显示亮色变体，当 Harness 主题要求暗色配色时
 切换为暗色变体。独立的亮色与暗色变体存放在 `docs/` 下。图标为原创作品，
 按本仓库 MIT 许可证分发。
+
+## 工具执行前的记忆写入检查
+
+插件会在工具执行前检查能识别的 rsrs 写命令。important remember 缺少父节点、
+父节点为空或包含 force 时，插件会拒绝执行。merge-ids 即使标为 trivial，
+也必须显式提供父节点，因为合并可能继承重要性。
+非空的字面父节点 ID 必须通过只读 `rsrs --client-only show <id> --json` 确认存在。
+验证失败、取消或超时后保持 pending，原 shell 命令不会执行。检查使用已配置的引擎，
+不启动 runtime；父节点检查限时五秒，为反馈和清理保留时间。
+
+执行 update --importance important 前，先读取目标的当前 parent_id，再用 show
+确认父节点存在。目标没有有效父节点时拒绝提升，须先挂到真实父节点。当前 CLI 的
+update 未公开改父节点参数；插件会拒绝这些不支持的参数，不把它们描述成能实际改父的命令。
+
+已知 memory_remember、memory_update 工具名（含服务器命名空间）无法绑定到当前 CLI 的目标库，因此直接拒绝。必须改用受保护的 CLI 工具；不得自动重试先前结果未知的写入。其他工具名不受影响。
+此检查无法把不透明的哈希或截断名称还原成 MCP 原始工具名。
+
+对已知 shell 的 -c/-Command 代码参数和生效的命令替换，只识别写入并拒绝整个调用，不执行代码。简单的 NAME=value 前缀不能隐藏写入。没有展开的普通引号文本仍按文本处理。检查区分 Bash 和 PowerShell 的转义；terminal_send 的持久 shell 不明确，因此采用保守检查。
+
+正常读取与其他工具不变，当前 remember/update 的元数据参数仍可使用。
+已识别的复合写命令、命令替换、包装调用或动态参数会被拒绝，须改成一条参数明确的命令。
+正文里的 `--parent` 不会被当作参数。此检查不是 shell 沙箱，不能覆盖任意脚本、
+别名、隐藏的执行文件或分段终端输入。插件不授予权限、不选父节点、不代写、不授权自动重试。
+模型仍必须读策略与候选全文、判断合理父节点、遵守只读和关闭状态，并核验实际写入。
+实际写入结果未知时，不得自动重试或声称成功。
+
+覆盖 Harness 的 bash、pwsh 和 terminal_send 文本，包括嵌套调用。
+异步检查后还有同步 guard，后续 allow 不能取消拒绝，也不能把旧验证用于新参数。
+宿主须支持 tools.guard()，本次核对版本为 0.2.1-rc.5。不兼容宿主会在插件加载时报告错误。
+enabled: false 会同时关闭记忆集成与此检查。
+
+检查针对经过硬门的参数。其他扩展若在硬门后替换参数，或绕过宿主工具链直接执行，
+不在此检查范围内。CLI/Core 仍须在实际写入时原子地保证父节点约束。

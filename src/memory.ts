@@ -10,6 +10,188 @@ Explicitly stored titles are provisional; refine them when needed with rsrs --cl
 /nomem or #nomem skips automatic recall for that user message only. Engine install, accounts, models, and sync are managed by rsrs; read rsrs --client-only prompt for the complete workflow.
 When wrapping up, store new facts, decisions, agreements, or lessons per the rules above; if nothing needs storing, end.`
 
+
+export function memoryToolWrite(name: unknown): boolean {
+  return typeof name === 'string' && /(?:^|__)memory_(?:remember|update)$/.test(name)
+}
+
+export const MCP_WRITE_DENIAL = "Respire blocked this tool call before execution: this memory tool's target library cannot be verified. Use one explicit rsrs command through the guarded shell tools. Keep placement pending; DO NOT automatically retry any earlier unknown write."
+
+// This recognizes literal CLI calls only; scripts and aliases are not a shell sandbox.
+export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash' | 'powershell' | 'unknown' = 'bash'): { parent?: string, target?: string, reason?: string } | undefined {
+  if (typeof command !== 'string') return
+  const tokens: string[] = []
+  const embedded: { code: string, shell: 'bash' | 'powershell' | 'unknown' }[] = []
+  const escaped = (at: number) => {
+    const escape = shell === 'bash' ? '\\' : shell === 'powershell' ? '`' : undefined
+    let count = 0
+    while (escape && command[--at] === escape) count++
+    return count % 2 === 1
+  }
+  const codeEnd = (start: number, marker: string) => {
+    let depth = 1, innerQuote = '', end = start
+    for (; end < command.length; end++) {
+      const char = command[end]
+      if (escaped(end)) continue
+      if (marker === '`') { if (char === '`') break; continue }
+      if (innerQuote) { if (char === innerQuote) innerQuote = ''; continue }
+      if (char === "'" || char === '"') innerQuote = char
+      else if (char === '(') depth++
+      else if (char === ')' && --depth === 0) break
+    }
+    return end
+  }
+  let word = '', quote = '', started = false, complex = false
+  const flush = () => { if (started) tokens.push(word); word = ''; started = false }
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]!
+    if (quote !== "'" && !escaped(i) && ((char === '`' && shell !== 'powershell') || (char === '$' && command[i + 1] === '('))) {
+      const start = i + (char === '`' ? 1 : 2), end = codeEnd(start, char)
+      embedded.push({ code: command.slice(start, end), shell })
+      word += command.slice(i, end + 1); started = true; complex = true
+      i = end
+      continue
+    }
+    if (quote) {
+      if (char === quote) quote = ''
+      else {
+        word += char
+        if (quote === '"' && (/[$\x60]/.test(char) || (char === '\\' && /["$\x60]/.test(command[i + 1] ?? '')))) complex = true
+      }
+    } else if (char === "'" || char === '"') {
+      quote = char; started = true
+    } else if (/\s/.test(char)) {
+      flush()
+      if (char === '\n' || char === '\r') { complex = true; tokens.push(';') }
+    } else if (/[;&|<>(){}]/.test(char)) {
+      flush()
+      if (char === '&' && ['<', '>'].includes(tokens.at(-1) ?? '')) tokens[tokens.length - 1] += '&'
+      else if (char === '>' && tokens.at(-1) === '&') tokens[tokens.length - 1] = '&>'
+      else tokens.push(char)
+      if (!(char === '&' && tokens.length === 1)) complex = true
+    } else {
+      word += char; started = true
+      if (/[$\x60#]/.test(char) || (char === '@' && /['"]/.test(command[i + 1] ?? ''))
+        || (char === '\\' && /[\s"'$;&|<>(){}\x60]/.test(command[i + 1] ?? ''))) complex = true
+    }
+  }
+  flush()
+  if (quote) complex = true
+  const basename = (value: string) => (value.replace(/\\/g, '/').split('/').at(-1) ?? '').toLowerCase()
+  const isRsrs = (value: string) => /^(?:rsrs|respire)(?:\.exe|\.cmd)?$/i.test(basename(value))
+    || value === executable
+  const redirection = (value: string | undefined) => /^(?:[<>]&?|&>)$/.test(value ?? '')
+  const afterRedirect = (at: number) => {
+    const original = at
+    if (/^\d+$/.test(tokens[at] ?? '') && redirection(tokens[at + 1])) at++
+    if (!redirection(tokens[at])) return original
+    while (redirection(tokens[at])) at++
+    return at + 1
+  }
+  const writes: { start: number, command: string, args: string[] }[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const shell = /^(?:bash|sh|zsh|pwsh|powershell)(?:\.exe|\.cmd)?$/i.test(basename(tokens[i]!))
+    if (!shell && !isRsrs(tokens[i]!)) continue
+    let start = 0
+    for (let k = 0; k < i; k++) if ([';', '&', '|', '(', ')', '{', '}'].includes(tokens[k] ?? '')) start = k + 1
+    while (start < i) {
+      if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(tokens[start] ?? '')) { start++; continue }
+      const redirected = afterRedirect(start)
+      if (redirected === start) break
+      start = redirected
+    }
+    if (start !== i && !/^(?:npx|npm|pnpm|yarn|env|sudo|command|exec|nohup|cmd|powershell|pwsh|bash|sh)$/.test(tokens[start] ?? '')) continue
+    if (shell) {
+      const powershell = /^(?:pwsh|powershell)/i.test(basename(tokens[i]!))
+      for (let codeAt = i + 1; codeAt < tokens.length; codeAt++) {
+        const option = tokens[codeAt]!
+        const flag = powershell ? option.toLowerCase() : option
+        if (powershell ? /^-c(?:ommand)?$/.test(flag) : /^-[A-Za-z]*c[A-Za-z]*$/.test(flag)) {
+          embedded.push({ code: powershell ? tokens.slice(codeAt + 1).join(' ') : tokens[codeAt + 1] ?? '', shell: powershell ? 'powershell' : 'bash' })
+          break
+        }
+        if (!flag.startsWith('-')) break
+        if (['--rcfile', '--init-file', '-o', '-O', '-executionpolicy', '-workingdirectory', '-inputformat', '-outputformat', '-windowstyle', '-version'].includes(flag)) codeAt++
+      }
+      continue
+    }
+    let j = i + 1
+    while (j < tokens.length) {
+      const redirected = afterRedirect(j)
+      if (redirected !== j) { j = redirected; continue }
+      if (['--client-only', '--json'].includes(tokens[j] ?? '')) j++
+      else if (['--model-task-id', '--progress-id'].includes(tokens[j] ?? '')) j += 2
+      else if (/^--(?:model-task-id|progress-id)=/.test(tokens[j] ?? '')) j++
+      else break
+    }
+    if (tokens[j]?.startsWith('-')) {
+      const operation = tokens.findIndex((value, index) => index > j
+        && /^(?:remember|update|recall|show|list|status|prompt|agent-config|taxonomy|tree|candidates|chain|doctor|help|sync|model|config|export|backup)$/.test(value))
+      if (operation !== -1 && ['remember', 'update'].includes(tokens[operation] ?? '')) { j = operation; complex = true }
+    }
+    if (['remember', 'update'].includes(tokens[j] ?? '')) writes.push({ start: i, command: tokens[j]!, args: tokens.slice(j + 1) })
+  }
+  const deny = (reason: string) => ({ reason: 'Respire blocked this tool call before execution: ' + reason
+    + ' Use one explicit rsrs command with literal arguments. DO NOT automatically retry an earlier write with an unknown outcome; verify it read-only first.' })
+  if (embedded.some(({ code, shell }) => memoryWrite(code, executable, shell))) return deny('the recognized write is inside shell code or command substitution.')
+  if (!writes.length) return
+  const write = writes[0]!
+  if (complex || writes.length !== 1 || write.start !== (tokens[0] === '&' ? 1 : 0)) {
+    return deny('the recognized write uses compound, dynamic or unsupported shell syntax.')
+  }
+  const values = new Map<string, string>()
+  const positional: string[] = []
+  const flags = new Set(['--title', '--content', '--tags', '--project', '--computer', '--emotion',
+    '--importance', '--parent', '--type', '--kind', '--merge-ids', '--supersedes', '--see-also',
+    '--summary', '--source-refs', '--valid-until', '--review-at', '--artifact', '--model-task-id', '--progress-id'])
+  for (let i = 0; i < write.args.length; i++) {
+    const arg = write.args[i]!
+    if (arg === '--') { positional.push(...write.args.slice(i + 1)); break }
+    if (!arg.startsWith('-')) { positional.push(arg); continue }
+    const equal = arg.indexOf('=')
+    const flag = equal === -1 ? arg : arg.slice(0, equal)
+    if (flag === '--help' || flag === '-h') return
+    if (['--json', '--client-only', '--clear-summary', '--clear-source-refs', '--clear-valid-until', '--clear-review-at', '--clear-artifact'].includes(flag)) continue
+    if (['--force', '--clear-parent', '--no-parent'].includes(flag)) return deny('force and unsupported parent-changing options are not permitted.')
+    if (!flags.has(flag)) return deny('a write option cannot be validated.')
+    const value = equal === -1 ? write.args[++i] : arg.slice(equal + 1)
+    if (value === undefined || value.startsWith('--') || values.has(flag)) return deny('a write argument is missing or ambiguous.')
+    values.set(flag, value)
+  }
+  const parent = values.get('--parent')
+  if (parent !== undefined && !/^(?:[0-9a-f]{8,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(parent)) {
+    return deny('the parent must be a nonempty literal record ID.')
+  }
+  const important = (values.get('--importance') ?? 'trivial').toLowerCase() === 'important'
+  if (write.command === 'update') {
+    if (parent !== undefined) return deny('current update does not accept parent changes; attach the record first.')
+    if (important) {
+      const target = positional[0]
+      if (positional.length !== 1 || !target || !/^(?:[0-9a-f]{8,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(target)) {
+        return deny('the importance update requires one literal target ID.')
+      }
+      return { target }
+    }
+  } else if ((important || values.has('--merge-ids')) && !parent) {
+    return deny('important records and merges require an explicit real parent ID.')
+  }
+  return { parent }
+}
+
+export function parentExists(doc: Envelope, parent: string) {
+  const summary = record(doc?.summary), entry = record(record(doc?.details)?.entry)
+  return doc?.status === 'ok' && typeof summary?.id === 'string'
+    && summary.id.toLowerCase().startsWith(parent.toLowerCase())
+    && RECORD_ID.test(summary.id) && entry?.id === summary.id && typeof entry?.content === 'string'
+}
+
+export function currentParent(doc: Envelope, target: string): string | undefined {
+  const entry = record(record(doc.details)?.entry)
+  const parent = entry?.parent_id
+  return parentExists(doc, target) && typeof parent === 'string' && RECORD_ID.test(parent)
+    && typeof entry?.id === 'string' && !entry.id.toLowerCase().startsWith(parent.toLowerCase()) ? parent : undefined
+}
+
 export const STORE_PREFIX = /^(?:记|存|记录|记住|remember)\s*[:：]\s*/i
 export const SKIP_PREFIX = /^(?:\/nomem|#nomem)(?=\s|$)/i
 export const SKILL_PREFIX = /^\$\s*skill\s*:\s*\S+\s*/i

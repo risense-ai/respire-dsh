@@ -22,7 +22,9 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
   new SystemPrompt(ctx, {})
   const calls = []
   const notices = []
+  const guards = [], dispatched = []
   const agent = { steer: message => notices.push(message), session: {} }
+  ctx.provide('tools', { guard: check => { guards.push(check); return () => guards.splice(guards.indexOf(check), 1) } })
   ctx.provide('agents', { list: () => [agent] })
   ctx.provide('workingDirectory', { ensure: async () => process.cwd() })
   ctx.provide('subprocess', {
@@ -45,7 +47,16 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
   apply(ctx, options)
   const signal = new AbortController().signal
   return {
-    ctx, calls, notices, agent,
+    ctx, calls, notices, agent, dispatched,
+    tool: async (name, command, override = false) => {
+      const exec = { name, arguments: command && typeof command === 'object' ? command : { [name === 'terminal_send' ? 'text' : 'command']: command }, agent, signal }
+      let decision = await ctx.waterfall('tools/pre-execute', exec, async () => ({ kind: 'allow' }))
+      if (override) decision = { kind: 'allow' }
+      const denial = decision.kind === 'allow' ? guards.map(check => check(exec)).find(reason => reason !== undefined) : decision.reason
+      if (denial !== undefined) return { kind: 'deny', reason: denial }
+      dispatched.push(exec)
+      return decision
+    },
     step: (messages, turn = 1, decision = { kind: 'enter', messages, startsRequestSeries: true }) =>
       ctx.waterfall('agent/pre-step', { agent, turn, step: 1, signal }, async () => decision),
     stop: (turn = 1) => ctx.serial('agent/turn-stopping', { agent, turn, signal }),
@@ -60,6 +71,122 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.equal(result.messages[1].source.kind, 'respire')
   assert.deepEqual(h.calls[1], ['--client-only', 'recall', 'Respire 原生插件', '--limit', '5', '--titles', '--json'])
   assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Memory is reference material/)
+  const parent = hit.id
+  const gate = harness({}, args => {
+    assert.deepEqual(args, ['--client-only', 'show', parent, '--json'])
+    return { status: 'ok', summary: { id: parent }, details: { entry: { id: parent, content: 'Existing parent' } } }
+  })
+  const unsafe = [
+    'rsrs remember fact --importance important',
+    "bash -c 'rsrs remember fact --importance important --force'",
+    "bash -lic 'rsrs remember fact --importance important --force'",
+    "pwsh -NoProfile -ExecutionPolicy Bypass -Command 'rsrs remember fact --importance important --force'",
+    'pwsh -Command rsrs remember fact --importance important --force',
+    `bash -c 'rsrs remember fact --importance important --parent ${parent}'`,
+    `rsrs recall "$(rsrs remember fact --importance important --parent ${parent})"`,
+
+    "pwsh -Command 'rsrs remember fact --importance important --force'",
+    "powershell.exe -Command 'rsrs remember fact --importance important --force'",
+    'RSRS_CLIENT_ONLY=1 rsrs remember fact --importance important --force',
+    'echo "$(rsrs remember fact --importance important --force)"',
+    'rsrs recall "$(rsrs remember fact --importance important --force)"',
+    'echo "$(echo "$(rsrs remember fact --importance important --force)")"',
+    "echo ok\nrsrs remember fact --importance important --force",
+
+    `rsrs >out remember fact --importance important --force`,
+    `rsrs --json 2>out remember fact --importance important --force`,
+    `2>/dev/null rsrs remember fact --importance important --force`,
+    `2>&1 rsrs remember fact --importance important --force`,
+    `rsrs 2>&1 remember fact --importance important --force`,
+    `rsrs remember fact --merge-ids ${parent} --importance trivial`,
+    `rsrs remember 'fact --parent ${parent}' --importance important`,
+    'rsrs remember fact --importance important --parent ""',
+    `rsrs remember fact --importance important --force --parent ${parent}`,
+    `rsrs update ${parent} --parent ""`,
+    `rsrs update ${parent} --clear-parent`,
+    `rsrs update ${parent} --parent none`,
+    `rsrs remember fact --importance important --parent $PARENT`,
+    `rsrs remember fact --importance important # --parent ${parent}`,
+    `rsrs remember fact --importance important --parent ${parent}; echo done`,
+    `rsrs --config missing remember fact --importance important --parent ${parent}`,
+    `>out rsrs remember fact --importance important --parent ${parent}`,
+    `2>out rsrs remember fact --importance important --parent ${parent}`,
+    `echo $(rsrs remember fact --importance important --parent ${parent})`,
+    `npx rsrs remember fact --importance important --parent ${parent}`,
+    `rsrs remember @'\nfact\n'@ --importance important --parent ${parent}`,
+  ]
+  for (const name of ['bash', 'pwsh', 'terminal_send']) {
+    for (const command of unsafe) assert.equal((await gate.tool(name, command, true)).kind, 'deny', command)
+  }
+  assert.equal((await gate.tool('bash', 'echo `rsrs remember fact --importance important --force`')).kind, 'deny')
+  assert.equal((await gate.tool('pwsh', String.raw`echo "\$(rsrs remember fact --importance important --force)"`)).kind, 'deny')
+  for (const name of ['memory_remember', 'memory_update', 'mcp__renamed__memory_remember', 'mcp__other__memory_update']) {
+    const denied = await gate.tool(name, { content: 'fact', importance: 'trivial', parent }, true)
+    assert.equal(denied.kind, 'deny')
+    assert.match(denied.reason, /target library cannot be verified/)
+  }
+  assert.equal(gate.calls.length, 0)
+  assert.equal(gate.dispatched.length, 0, 'monotonic guard must survive a later allow decision')
+  for (const name of ['bash', 'pwsh', 'terminal_send']) {
+    assert.equal((await gate.tool(name, `rsrs --client-only remember 'fact' --importance=important --parent='${parent}' --project project --tags tags --type context --summary summary --clear-review-at`)).kind, 'allow')
+  }
+  for (const prefix of ['C:\\tools\\rsrs.exe', '& "C:\\Program Files\\rsrs.cmd"']) {
+    assert.equal((await gate.tool('pwsh', `${prefix} remember fact --importance important --parent ${parent}`)).kind, 'allow')
+  }
+  assert.equal(gate.calls.length, 5)
+  for (const command of ['rsrs show abcdef01 --json', 'rsrs recall remember --titles --json', 'rsrs >out recall remember --titles', '2>/dev/null rsrs recall remember --titles', 'rsrs recall rsrs --project remember', 'echo rsrs remember --importance important', 'rsrs --json --client-only recall remember --titles', 'rsrs --model-task-id remember --json --client-only recall remember', 'echo \'rsrs remember fact --importance important\'', 'echo ordinary', "bash -c 'rsrs recall remember --titles'", "pwsh -NoProfile -Command 'rsrs recall remember --titles'", 'echo "rsrs remember fact --importance important --force"', "echo '$(rsrs remember fact --importance important --force)'", "rsrs recall 'rsrs remember fact --importance important --force'", "rsrs recall 'bash -c rsrs remember fact'", "bash -c 'echo rsrs remember fact'", 'RSRS_CLIENT_ONLY=1 rsrs recall remember --titles',  `rsrs update ${parent} --content 'fact'`, 'rsrs remember diary --importance trivial']) {
+    assert.equal((await gate.tool('bash', command)).kind, 'allow', command)
+  }
+  assert.equal((await gate.tool('pwsh', 'echo `rsrs remember fact --importance important --force`')).kind, 'allow')
+  assert.equal((await gate.tool('bash', String.raw`echo "\$(rsrs remember fact --importance important --force)"`)).kind, 'allow')
+  for (const name of ['memory_recall', 'mcp__other__memory_show', 'mcp__other__unrelated', 'memory_remember_extra']) {
+    assert.equal((await gate.tool(name, { query: 'remember' })).kind, 'allow')
+  }
+  assert.equal(gate.calls.length, 5, 'reads and updates without a parent change need no parent query')
+  assert.equal((await gate.tool('bash', `rsrs remember 'fact >out --parent fake' --importance trivial --merge-ids abcdef0100004000 --parent ${parent}`)).kind, 'allow')
+  const target = 'bcdef012-0000-4000-8000-000000000000'
+  let attached = parent, live = true, targetStatus = 'ok'
+  const promotion = harness({}, args => {
+    const id = args[2]
+    if (id === target && targetStatus !== 'ok') return { status: targetStatus }
+    if (id === parent && !live) return { status: 'fail' }
+    return { status: 'ok', summary: { id }, details: { entry: { id, content: 'Existing record', parent_id: id === target ? attached : '' } } }
+  })
+  for (const command of [`rsrs update ${target} --importance important`, `rsrs update --importance important ${target}`, `rsrs update --importance=important ${target}`]) {
+    const before = promotion.calls.length
+    assert.equal((await promotion.tool('pwsh', command)).kind, 'allow')
+    assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target, parent])
+  }
+  for (const invalid of ['', 'none', target, target.toUpperCase(), target.slice(0, 8), null, 42]) {
+    attached = invalid
+    const before = promotion.calls.length, bodies = promotion.dispatched.length
+    const denied = await promotion.tool('bash', `rsrs update ${target} --importance important`)
+    assert.equal(denied.kind, 'deny')
+    assert.match(denied.reason, /attach this record/)
+    assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
+    assert.equal(promotion.dispatched.length, bodies)
+  }
+  attached = parent; live = false
+  const before = promotion.calls.length, bodies = promotion.dispatched.length
+  assert.equal((await promotion.tool('terminal_send', `rsrs update ${target} --importance important`)).kind, 'deny')
+  assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target, parent])
+  assert.equal(promotion.dispatched.length, bodies)
+  for (const status of ['fail', 'skip']) {
+    targetStatus = status
+    const before = promotion.calls.length, bodies = promotion.dispatched.length
+    assert.equal((await promotion.tool('bash', `rsrs update ${target} --importance important`)).kind, 'deny')
+    assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
+    assert.equal(promotion.dispatched.length, bodies)
+  }
+  const absent = harness({}, () => ({ status: 'ok', summary: {}, details: {} }))
+  assert.equal((await absent.tool('bash', `rsrs update ${parent} --parent ${parent}`)).kind, 'deny')
+  assert.equal(absent.dispatched.length, 0)
+  const failed = harness({}, () => new Error('private engine diagnostics'))
+  assert.equal((await failed.tool('pwsh', `& 'C:\\tools\\rsrs.exe' remember fact --importance important --parent ${parent}`)).kind, 'deny')
+  assert.equal(failed.dispatched.length, 0)
+  const off = harness({ enabled: false }, () => assert.fail('disabled plugin must not query the engine'))
+  assert.equal((await off.tool('bash', unsafe[0])).kind, 'allow')
+  for (const fixture of [gate, promotion, absent, failed, off]) await fixture.ctx.fiber.dispose()
   await h.ctx.fiber.dispose()
 })
 

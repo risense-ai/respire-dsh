@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.10
+
+- Reject recognized writes inside known shell code arguments, command substitutions and environment-assignment prefixes; preserve literal quoted text and normal reads.
+- Block visible memory_remember/memory_update MCP basenames when their target library cannot be verified; verify importance options before the update target in existing assertions.
+- Block recognized unsafe rsrs writes before shell execution: important remember requires a literal parent, force and unsupported parent-changing options are denied, and explicit parents must exist.
+- Recognize redirections before the executable and between executable/subcommand; require explicit parents for every merge and verify an existing target parent before important updates.
+- Verify parents through bounded read-only --client-only show calls; failures and timeouts leave storage pending without dispatching the shell.
+- Keep read commands, unrelated tools, prefix zero-write handoff and unknown-write no-retry rules unchanged. Compound or dynamic recognized writes require one literal command; scripts and aliases are not a universal enforcement boundary.
+
+
 ## 0.1.9
 
 - Preserve mandatory candidate, parent and read-back requirements with explicit MUST/ONLY AFTER language.
