@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- Block recognized unsafe rsrs writes before shell execution: important remember requires a literal parent, force and clearing parent links are denied, and explicit parents must exist.
+- Verify parents through bounded read-only --client-only show calls; failures and timeouts leave storage pending without dispatching the shell.
+- Keep read commands, unrelated tools, prefix zero-write handoff and unknown-write no-retry rules unchanged. Compound or dynamic recognized writes require one literal command; scripts and aliases are not a universal enforcement boundary.
+
+
 ## 0.1.9
 
 - Preserve mandatory candidate, parent and read-back requirements with explicit MUST/ONLY AFTER language.

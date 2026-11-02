@@ -5,7 +5,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
-import { containsSecret, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
+import { containsSecret, memoryWrite, parentExists, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
 import { RsrsError, runRsrs } from './rsrs.js'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -15,7 +15,7 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 export const name = 'respire'
-export const inject = ['agents', 'systemPrompt', 'subprocess', 'workingDirectory']
+export const inject = ['agents', 'systemPrompt', 'subprocess', 'workingDirectory', 'tools']
 
 export interface Config {
   enabled?: boolean
@@ -58,6 +58,14 @@ function contextMessage(text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'respire' } })
 }
 
+// Structural tools contract keeps the existing host dependency versions unchanged.
+interface MemoryExecution { name: string, arguments: unknown, agent?: Agent, signal: AbortSignal }
+interface ToolDecision { kind: string, reason?: string, [key: string]: unknown }
+interface ToolsContext {
+  tools: { guard(check: (exec: MemoryExecution) => string | undefined): unknown }
+  on(event: 'tools/pre-execute', listener: (exec: MemoryExecution, next: () => Promise<ToolDecision>) => Promise<ToolDecision>): unknown
+}
+
 export function apply(ctx: Context, options: Config = {}): void {
   const config = { enabled: true, rsrsPath: 'rsrs', recallLimit: 5, recallThreshold: 0,
     budgetChars: 1500, minPromptChars: 2, storeNudgeEvery: 1, timeoutMs: 20000, ...options }
@@ -86,6 +94,39 @@ export function apply(ctx: Context, options: Config = {}): void {
     }
     return state
   }
+
+  const toolHost = ctx as unknown as ToolsContext
+  if (typeof toolHost.tools?.guard !== 'function') throw new Error('respire: this Harness version must support tools.guard()')
+  const commandOf = (exec: MemoryExecution) => ['bash', 'pwsh', 'terminal_send'].includes(exec.name)
+    ? record(exec.arguments)?.[exec.name === 'terminal_send' ? 'text' : 'command'] : undefined
+  const checks = new WeakMap<MemoryExecution, { command: unknown, reason?: string }>()
+  const unverified = 'Respire blocked this tool call before execution: parent validation did not complete. Keep placement pending; DO NOT guess, force, downgrade, or automatically retry an earlier unknown write.'
+  toolHost.tools.guard(exec => {
+    if (!memoryWrite(commandOf(exec), config.rsrsPath)) return
+    const check = checks.get(exec)
+    return check && check.command === commandOf(exec) ? check.reason : unverified
+  })
+  toolHost.on('tools/pre-execute', async (exec, next) => {
+    const decision = await next()
+    if (decision.kind !== 'allow') return decision
+    const command = commandOf(exec)
+    const write = memoryWrite(command, config.rsrsPath)
+    if (!write) return decision
+    let reason = write.reason
+    if (!reason && write.parent) {
+      const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(Math.min(config.timeoutMs, 5000))])
+      try {
+        if (!exec.agent) throw new Error('agent unavailable')
+        signal.throwIfAborted()
+        const cwd = await ctx.workingDirectory.ensure(exec.agent, signal)
+        const doc = await runRsrs(ctx.subprocess, config.rsrsPath,
+          ['--client-only', 'show', write.parent, '--json'], cwd, signal, Math.min(config.timeoutMs, 5000))
+        if (!parentExists(doc, write.parent)) reason = unverified
+      } catch { reason = unverified }
+    }
+    checks.set(exec, { command, reason })
+    return reason ? { kind: 'deny', reason } : decision
+  })
 
   ctx.systemPrompt.section({ name: 'respire:rules', order: 850, text: RULES, interpolate: false })
 

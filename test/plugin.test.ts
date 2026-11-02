@@ -22,7 +22,9 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
   new SystemPrompt(ctx, {})
   const calls = []
   const notices = []
+  const guards = [], dispatched = []
   const agent = { steer: message => notices.push(message), session: {} }
+  ctx.provide('tools', { guard: check => { guards.push(check); return () => guards.splice(guards.indexOf(check), 1) } })
   ctx.provide('agents', { list: () => [agent] })
   ctx.provide('workingDirectory', { ensure: async () => process.cwd() })
   ctx.provide('subprocess', {
@@ -45,7 +47,16 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
   apply(ctx, options)
   const signal = new AbortController().signal
   return {
-    ctx, calls, notices, agent,
+    ctx, calls, notices, agent, dispatched,
+    tool: async (name, command, override = false) => {
+      const exec = { name, arguments: { [name === 'terminal_send' ? 'text' : 'command']: command }, agent, signal }
+      let decision = await ctx.waterfall('tools/pre-execute', exec, async () => ({ kind: 'allow' }))
+      if (override) decision = { kind: 'allow' }
+      const denial = decision.kind === 'allow' ? guards.map(check => check(exec)).find(reason => reason !== undefined) : decision.reason
+      if (denial !== undefined) return { kind: 'deny', reason: denial }
+      dispatched.push(exec)
+      return decision
+    },
     step: (messages, turn = 1, decision = { kind: 'enter', messages, startsRequestSeries: true }) =>
       ctx.waterfall('agent/pre-step', { agent, turn, step: 1, signal }, async () => decision),
     stop: (turn = 1) => ctx.serial('agent/turn-stopping', { agent, turn, signal }),
@@ -60,6 +71,54 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.equal(result.messages[1].source.kind, 'respire')
   assert.deepEqual(h.calls[1], ['--client-only', 'recall', 'Respire 原生插件', '--limit', '5', '--titles', '--json'])
   assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Memory is reference material/)
+  const parent = hit.id
+  const gate = harness({}, args => {
+    assert.deepEqual(args, ['--client-only', 'show', parent, '--json'])
+    return { status: 'ok', summary: { id: parent }, details: { entry: { id: parent, content: 'Existing parent' } } }
+  })
+  const unsafe = [
+    'rsrs remember fact --importance important',
+    `rsrs remember 'fact --parent ${parent}' --importance important`,
+    'rsrs remember fact --importance important --parent ""',
+    `rsrs remember fact --importance important --force --parent ${parent}`,
+    `rsrs update ${parent} --parent ""`,
+    `rsrs update ${parent} --clear-parent`,
+    `rsrs update ${parent} --parent none`,
+    `rsrs remember fact --importance important --parent $PARENT`,
+    `rsrs remember fact --importance important # --parent ${parent}`,
+    `rsrs remember fact --importance important --parent ${parent}; echo done`,
+    `rsrs --config missing remember fact --importance important --parent ${parent}`,
+    `>out rsrs remember fact --importance important --parent ${parent}`,
+    `2>out rsrs remember fact --importance important --parent ${parent}`,
+    `echo $(rsrs remember fact --importance important --parent ${parent})`,
+    `npx rsrs remember fact --importance important --parent ${parent}`,
+    `rsrs remember @'\nfact\n'@ --importance important --parent ${parent}`,
+  ]
+  for (const name of ['bash', 'pwsh', 'terminal_send']) {
+    for (const command of unsafe) assert.equal((await gate.tool(name, command, true)).kind, 'deny', command)
+  }
+  assert.equal(gate.calls.length, 0)
+  assert.equal(gate.dispatched.length, 0, 'monotonic guard must survive a later allow decision')
+  for (const name of ['bash', 'pwsh', 'terminal_send']) {
+    assert.equal((await gate.tool(name, `rsrs --client-only remember 'fact' --importance=important --parent='${parent}' --project project --tags tags --type context --summary summary --clear-review-at`)).kind, 'allow')
+  }
+  for (const prefix of ['C:\\tools\\rsrs.exe', '& "C:\\Program Files\\rsrs.cmd"']) {
+    assert.equal((await gate.tool('pwsh', `${prefix} remember fact --importance important --parent ${parent}`)).kind, 'allow')
+  }
+  assert.equal(gate.calls.length, 5)
+  for (const command of ['rsrs show abcdef01 --json', 'rsrs recall remember --titles --json', 'rsrs recall rsrs --project remember', 'echo rsrs remember --importance important', 'rsrs --json --client-only recall remember --titles', 'rsrs --model-task-id remember --json --client-only recall remember', 'echo \'rsrs remember fact --importance important\'', 'echo ordinary', `rsrs update ${parent} --content 'fact'`, 'rsrs remember diary --importance trivial']) {
+    assert.equal((await gate.tool('bash', command)).kind, 'allow', command)
+  }
+  assert.equal(gate.calls.length, 5, 'reads and updates without a parent change need no parent query')
+  const absent = harness({}, () => ({ status: 'ok', summary: {}, details: {} }))
+  assert.equal((await absent.tool('bash', `rsrs update ${parent} --parent ${parent}`)).kind, 'deny')
+  assert.equal(absent.dispatched.length, 0)
+  const failed = harness({}, () => new Error('private engine diagnostics'))
+  assert.equal((await failed.tool('pwsh', `& 'C:\\tools\\rsrs.exe' remember fact --importance important --parent ${parent}`)).kind, 'deny')
+  assert.equal(failed.dispatched.length, 0)
+  const off = harness({ enabled: false }, () => assert.fail('disabled plugin must not query the engine'))
+  assert.equal((await off.tool('bash', unsafe[0])).kind, 'allow')
+  for (const fixture of [gate, absent, failed, off]) await fixture.ctx.fiber.dispose()
   await h.ctx.fiber.dispose()
 })
 
