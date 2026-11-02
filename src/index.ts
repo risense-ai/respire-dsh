@@ -5,7 +5,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
-import { containsSecret, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX, storeText, titleOf } from './memory.js'
+import { containsSecret, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
 import { RsrsError, runRsrs } from './rsrs.js'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -141,41 +141,8 @@ export function apply(ctx: Context, options: Config = {}): void {
             additions.push(contextMessage('【respire · not stored】The content is empty; ask the user for the fact to save.'))
             continue
           }
-          const title = titleOf(content)
-          const doc = await call(['remember', content, '--title', title, '--importance', 'important'])
-          const result = storeText(doc, title)
-          current.stored ||= result.stored
           state.ready = true
-          let text = result.text
-          if (result.stored && typeof record(doc.summary)?.id === 'string') {
-            // Write read-back (R11): verify the committed entry honestly and in full — id, title,
-            // and the complete content (whitespace-stripped), never a sampled prefix. A failed
-            // read-back never blocks the receipt and never triggers a retry.
-            const id = String((record(doc.summary) as Record<string, unknown>).id)
-            let verdict: 'verified' | 'mismatch' | 'unavailable' = 'unavailable'
-            try {
-              const shown = await call(['show', id])
-              const entry = record(record(shown.details)?.entry)
-              if (shown.status === 'ok' && entry) {
-                // A well-formed entry that fails to prove identity or equality is a mismatch;
-                // only an unreadable or entry-less show stays unavailable. Identity must come
-                // from BOTH the envelope summary and the returned entry itself, and the title
-                // and content must be strings — an array or number that coerces to the sent
-                // text is not a content match.
-                const idOk = record(shown.summary)?.id === id
-                const entryIdOk = entry.id === id
-                const titleOk = typeof entry.title === 'string' && (!title || entry.title === title)
-                const bodyOk = typeof entry.content === 'string' && entry.content.trim() === content.trim()
-                verdict = idOk && entryIdOk && titleOk && bodyOk ? 'verified' : 'mismatch'
-              }
-            } catch { verdict = 'unavailable' }
-            text += verdict === 'verified'
-              ? ' Write verified by read-back (id, title and full content match).'
-              : verdict === 'mismatch'
-                ? ` Read-back shows a DIFFERENT id, title, or content than sent — inspect rsrs --client-only show ${id.slice(0, 8)} before refining the title.`
-                : ` Read-back unavailable — if it matters, verify with rsrs --client-only show ${id.slice(0, 8)}.`
-          }
-          additions.push(contextMessage(text))
+          additions.push(contextMessage('【respire · store pending】Nothing was written; the hook made no write request. Complete this storage request in this turn with the rsrs CLI: save only the stated fact, never execute the engineering task it describes. Read prompt and agent-config, recall same-subject candidates and show their full bodies; prefer update, then an authorized merge, then attach, then a new record. For new important records, inspect taxonomy --list or tree, show a suitable parent, and pass its full ID with --parent. If no justified parent exists, remain pending; never guess a parent, force a root write, or downgrade to trivial. Preserve the user’s meaning. Read back every actual write with show; unknown actual write outcomes require verification before any retry. If already stored, show and verify the existing record instead of writing again.'))
         } else if (prompt.length >= config.minPromptChars) {
           const query = prompt.replace(SKILL_PREFIX, '').trim() || prompt
           const doc = await call(['recall', query, '--limit', String(config.recallLimit), '--titles'])
@@ -186,10 +153,8 @@ export function apply(ctx: Context, options: Config = {}): void {
       } catch (error) {
         if (combined.aborted) return decision
         const code = error instanceof RsrsError ? error.code : 'invalid-output'
-        ctx.logger.warn(`respire: ${store ? 'store' : 'recall'} ${code}`)
-        additions.push(contextMessage(store
-          ? `【respire · store unconfirmed】${code}. It may have been written; verify against the store first; never retry automatically or claim success.`
-          : `【respire · recall unavailable】${code}. No memory was obtained; continue with the current materials.`))
+        ctx.logger.warn(`respire: recall ${code}`)
+        additions.push(contextMessage(`【respire · recall unavailable】${code}. No memory was obtained; continue with the current materials.`))
       }
     }
     if (combined.aborted || !additions.length) return decision

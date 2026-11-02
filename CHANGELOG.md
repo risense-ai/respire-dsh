@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+- Delegate explicit prefix storage to the main assistant without an unchecked write.
+- Require policy, full candidate review and a justified parent before new important storage; keep pending distinct from unknown actual writes.
+
 ## 0.1.7
 
 - Record ids are now validated against the engine's actual formats — a UUID or a

@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { apply, Config } from '../lib/index.js'
-import { containsSecret, recallText, storeText, titleOf } from '../lib/memory.js'
+import { containsSecret, recallText, storeText } from '../lib/memory.js'
 
 const hit = { id: 'abcdef01-0000-4000-8000-000000000000', title: '项目使用原生插件', score: 0.82 }
 const human = text => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
@@ -94,24 +94,26 @@ test('/nomem skips only automatic recall; skill prefix is removed', async () => 
   assert.equal(h.calls[1][2], '项目约定')
 })
 
-test('explicit store produces a receipt and suppresses the stop reminder', async () => {
-  const h = harness({}, () => ({ status: 'ok', summary: { id: hit.id } }))
+test('explicit prefix delegates curation without writing and leaves the reminder available', async () => {
+  const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
   const result = await h.step([human('记：项目采用 TypeScript')])
-  assert.match(textOf(result), /【respire · stored】/)
-  assert.equal(h.calls[1][1], 'remember')
-  assert.ok(!h.calls[1].includes('--force'))
+  const text = textOf(result)
+  for (const phrase of ['Nothing was written', 'hook made no write request', 'Read prompt and agent-config', 'show their full bodies', 'prefer update, then an authorized merge, then attach, then a new record', 'taxonomy --list or tree', 'no justified parent exists, remain pending', 'never execute the engineering task']) assert.ok(text.includes(phrase), phrase)
+  assert.doesNotMatch(text, /Saved:|may have been written/)
+  assert.deepEqual(h.calls.map(args => args[1]), ['status'])
   await h.stop()
-  assert.equal(h.notices.length, 0)
+  assert.equal(h.notices.length, 1)
 })
 
-test('pending store remains uncommitted and is never retried', async () => {
-  const h = harness({}, () => ({ status: 'pending', items: [{ name: 'abcdef01', value: '已有项目约定' }] }))
-  const user = human('remember: 项目采用 TypeScript')
-  const result = await h.step([user])
-  assert.match(textOf(result), /Nothing was written/)
-  assert.match(textOf(result), /已有项目约定/)
-  await h.step([user])
-  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
+test('all prefixes stay pending without writes and duplicate accepted inputs are not repeated', async () => {
+  const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
+  for (const [index, prefix] of ['记：', '存：', '记录：', '记住：', 'remember:'].entries()) {
+    const user = human(`${prefix}项目采用 TypeScript`)
+    assert.match(textOf(await h.step([user], index + 1)), /Complete this storage request in this turn/)
+    await h.step([user], index + 1)
+  }
+  assert.deepEqual(h.calls.map(args => args[1]), ['status'])
+  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /hook pending does not prohibit the first policy-compliant write/)
 })
 
 test('empty store and suspected credentials never reach remember or recall', async () => {
@@ -151,11 +153,11 @@ test('each agent has independent state and reminder cadence', async () => {
   assert.equal(otherNotices.length, 0)
 })
 
-test('failed store is visible and does not leak child error text', async () => {
+test('prefix handoff does not misreport an unissued write as unknown when the engine would fail', async () => {
   const h = harness({}, () => new Error('password=synthetic-example'))
   const result = await h.step([human('记：项目采用 TypeScript')])
-  assert.match(textOf(result), /store unconfirmed/)
-  assert.doesNotMatch(textOf(result), /synthetic-example/)
+  assert.match(textOf(result), /store pending/)
+  assert.doesNotMatch(textOf(result), /store unconfirmed|synthetic-example/)
 })
 
 test('disabled plugin and disabled reminders stay quiet', async () => {
@@ -210,82 +212,11 @@ test('store receipts follow the result-state contract (warn written, pending rel
   assert.match(pending.text, /--force/)
 })
 
-test('warn receipt (exit 2) on the production --client-only path stores once, reads back once, stops steering', async () => {
-  const id = '33333333-3333-4333-8333-333333333333'
-  const content = '项目采用 TypeScript，修改 src 之后必须先执行 npm run build 再运行测试'
-  const h = harness({}, args => args[1] === 'remember'
-    ? { exitCode: 2, doc: { status: 'warn', summary: { id }, errors: ['parent (cause) cannot be resolved; stored independently'] } }
-    : { status: 'ok', summary: { id }, details: { entry: { id, title: titleOf(content), content } } })
-  const result = await h.step([human(`记：${content}`)])
-  // the engine saw the exact production argument shape: --client-only remember ... --json
-  assert.equal(h.calls[1][0], '--client-only')
-  assert.equal(h.calls[1][1], 'remember')
-  assert.equal(h.calls[1].at(-1), '--json')
-  assert.match(textOf(result), /Saved with warnings/)
-  assert.match(textOf(result), /id, title and full content match/)
-  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
-  assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
-  await h.stop()
-  assert.equal(h.notices.length, 0)
-})
 
-test('read-back verifies the full record: wrong id, tampered tail, exact match, failed show', async () => {
-  const id = '44444444-4444-4444-8444-444444444444'
-  const content = '项目采用 TypeScript，测试导入的是 lib 编译产物，因此修改 src 之后必须先执行 npm run build，然后才能运行测试套件'
-  const title = titleOf(content)
-  const cases = [
-    // show returns a different id: the entry shown is not provably the one written
-    { show: { status: 'ok', summary: { id: '55555555-5555-4555-8555-555555555555' }, details: { entry: { id, title, content } } }, expect: /DIFFERENT/, verified: false },
-    // identical first 40 characters with a tampered tail: prefix sampling would pass, full comparison must not
-    { show: { status: 'ok', summary: { id }, details: { entry: { id, title, content: `${content.slice(0, 40)}……尾部已被篡改` } } }, expect: /DIFFERENT/, verified: false },
-    // exact id + title + full content
-    { show: { status: 'ok', summary: { id }, details: { entry: { id, title, content } } }, expect: /id, title and full content match/, verified: true },
-    // a failed show keeps the Saved receipt and reports unavailable
-    { show: new Error('show failed'), expect: /Read-back unavailable/, verified: false },
-  ]
-  for (const { show, expect, verified } of cases) {
-    const h = harness({}, args => args[1] === 'remember' ? { status: 'ok', summary: { id } } : show)
-    const result = await h.step([human(`记：${content}`)])
-    assert.match(textOf(result), /【respire · stored】Saved:/)
-    assert.match(textOf(result), expect)
-    if (!verified) assert.doesNotMatch(textOf(result), /full content match/)
-    assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
-  }
-})
 
-test('read-back schema-checks the returned entry: entry id and content type must prove identity', async () => {
-  const id = '66666666-6666-4666-8666-666666666666'
-  const content = '项目采用 TypeScript'
-  const title = titleOf(content)
-  const showWith = entry => ({ status: 'ok', summary: { id }, details: { entry } })
-  const cases = [
-    // summary.id is right but the entry itself points at another record
-    { show: showWith({ id: '77777777-7777-4777-8777-777777777777', title, content }), expect: /DIFFERENT/ },
-    // entry.id missing entirely
-    { show: showWith({ title, content }), expect: /DIFFERENT/ },
-    // a single-element array coerces to exactly the sent content — String() comparison alone would pass
-    { show: showWith({ id, title, content: [content] }), expect: /DIFFERENT/ },
-    // numeric content
-    { show: showWith({ id, title, content: 42 }), expect: /DIFFERENT/ },
-    // object content
-    { show: showWith({ id, title, content: { a: 1 } }), expect: /DIFFERENT/ },
-    // a non-string title is not a title match either
-    { show: showWith({ id, title: [title], content }), expect: /DIFFERENT/ },
-  ]
-  for (const { show, expect } of cases) {
-    const h = harness({}, args => args[1] === 'remember' ? { status: 'ok', summary: { id } } : show)
-    const result = await h.step([human(`记：${content}`)])
-    // the legal receipt keeps its Saved claim; only the verification is refused
-    assert.match(textOf(result), /【respire · stored】Saved:/)
-    assert.match(textOf(result), expect)
-    assert.doesNotMatch(textOf(result), /full content match/)
-    // never rewritten, read-only: exactly one remember and one show
-    assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
-    assert.equal(h.calls.filter(args => args[1] === 'show').length, 1)
-    await h.stop()
-    assert.equal(h.notices.length, 0)
-  }
-})
+
+
+
 
 test('missing or invalid ids are unknown receipts; only fail claims not-accepted; skip stays not-stored', () => {
   const missing = storeText({ status: 'ok' }, 'title')
@@ -337,21 +268,7 @@ test('record ids outside the engine whitelist (UUID or long hex) are unknown, ne
   assert.equal(storeText({ status: 'warn', summary: { id: '0123456789abcdef0123456789abcdef' } }, 'title').stored, true)
 })
 
-test('an all-dashes id in a full flow claims no write, sets no stored flag, triggers no read-back', async () => {
-  const h = harness({}, () => ({ status: 'ok', summary: { id: '--------' } }))
-  const result = await h.step([human('记：项目采用 TypeScript')])
-  assert.match(textOf(result), /store unconfirmed/)
-  assert.match(textOf(result), /never retry automatically/)
-  assert.doesNotMatch(textOf(result), /Saved/)
-  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 1)
-  assert.equal(h.calls.filter(args => args[1] === 'show').length, 0)
-  await h.stop()
-  // stored was never set, so the wrap-up reminder still fires — and nothing re-sends remember on its own
-  assert.equal(h.notices.length, 1)
-  await h.step([human('记：项目采用 TypeScript')], 2)
-  assert.equal(h.calls.filter(args => args[1] === 'remember').length, 2)
-  assert.equal(h.calls.filter(args => args[1] === 'show').length, 0)
-})
+
 
 test('credential filter handles private keys and leaves ordinary facts intact', () => {
   assert.equal(containsSecret('-----BEGIN RSA PRIVATE KEY-----'), true)
