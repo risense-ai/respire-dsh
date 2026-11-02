@@ -5,7 +5,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
-import { containsSecret, memoryWrite, parentExists, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
+import { containsSecret, currentParent, memoryWrite, parentExists, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
 import { RsrsError, runRsrs } from './rsrs.js'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -100,7 +100,7 @@ export function apply(ctx: Context, options: Config = {}): void {
   const commandOf = (exec: MemoryExecution) => ['bash', 'pwsh', 'terminal_send'].includes(exec.name)
     ? record(exec.arguments)?.[exec.name === 'terminal_send' ? 'text' : 'command'] : undefined
   const checks = new WeakMap<MemoryExecution, { command: unknown, reason?: string }>()
-  const unverified = 'Respire blocked this tool call before execution: parent validation did not complete. Keep placement pending; DO NOT guess, force, downgrade, or automatically retry an earlier unknown write.'
+  const unverified = 'Respire blocked this tool call before execution: parent validation did not complete. Keep placement pending; for important updates, attach the target first if it has no valid parent. DO NOT guess, force, downgrade, or automatically retry an earlier unknown write.'
   toolHost.tools.guard(exec => {
     if (!memoryWrite(commandOf(exec), config.rsrsPath)) return
     const check = checks.get(exec)
@@ -113,15 +113,25 @@ export function apply(ctx: Context, options: Config = {}): void {
     const write = memoryWrite(command, config.rsrsPath)
     if (!write) return decision
     let reason = write.reason
-    if (!reason && write.parent) {
+    if (!reason && (write.parent || write.target)) {
       const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(Math.min(config.timeoutMs, 5000))])
       try {
         if (!exec.agent) throw new Error('agent unavailable')
         signal.throwIfAborted()
         const cwd = await ctx.workingDirectory.ensure(exec.agent, signal)
-        const doc = await runRsrs(ctx.subprocess, config.rsrsPath,
-          ['--client-only', 'show', write.parent, '--json'], cwd, signal, Math.min(config.timeoutMs, 5000))
-        if (!parentExists(doc, write.parent)) reason = unverified
+        const read = (id: string) => runRsrs(ctx.subprocess, config.rsrsPath,
+          ['--client-only', 'show', id, '--json'], cwd, signal, Math.min(config.timeoutMs, 5000))
+        let parent = write.parent
+        if (write.target) {
+          const target = await read(write.target)
+          if (!parentExists(target, write.target)) reason = unverified
+          else {
+            parent = currentParent(target, write.target)
+            if (!parent) reason = 'Respire blocked this tool call before execution: attach this record under a real parent before requesting important. Keep it pending; DO NOT automatically retry any earlier unknown write.'
+          }
+        }
+        if (!reason && parent && !parentExists(await read(parent), parent)) reason = unverified
+        signal.throwIfAborted()
       } catch { reason = unverified }
     }
     checks.set(exec, { command, reason })

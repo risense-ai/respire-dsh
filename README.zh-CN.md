@@ -217,10 +217,15 @@ environment 留空。工作流需要 `id-token: write` 和 GitHub 托管 runner�
 ## 工具执行前的记忆写入检查
 
 插件会在工具执行前检查能识别的 rsrs 写命令。important remember 缺少父节点、
-父节点为空、force，以及 update 清除或传入无效父节点时，插件会拒绝执行。
+父节点为空或包含 force 时，插件会拒绝执行。merge-ids 即使标为 trivial，
+也必须显式提供父节点，因为合并可能继承重要性。
 非空的字面父节点 ID 必须通过只读 `rsrs --client-only show <id> --json` 确认存在。
 验证失败、取消或超时后保持 pending，原 shell 命令不会执行。检查使用已配置的引擎，
 不启动 runtime；父节点检查限时五秒，为反馈和清理保留时间。
+
+执行 update --importance important 前，先读取目标的当前 parent_id，再用 show
+确认父节点存在。目标没有有效父节点时拒绝提升，须先挂到真实父节点。当前 CLI 的
+update 未公开改父节点参数；插件会拒绝这些不支持的参数，不把它们描述成能实际改父的命令。
 
 正常读取与其他工具不变，当前 remember/update 的元数据参数仍可使用。
 已识别的复合写命令、命令替换、包装调用或动态参数会被拒绝，须改成一条参数明确的命令。

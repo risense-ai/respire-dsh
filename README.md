@@ -213,12 +213,19 @@ original artwork distributed under this repository's MIT license.
 ## Before-tool memory write checks
 
 The extension checks recognized literal rsrs writes before tool execution. It
-blocks important remember calls with missing or empty parents, force, and update
-calls that clear a parent or supply an invalid parent. A nonempty literal parent
+blocks important remember calls with missing or empty parents and all force calls.
+Every merge-ids request also needs an explicit parent, even when importance says
+trivial, because a merge can inherit importance. A nonempty literal parent
 ID must resolve through read-only `rsrs --client-only show <id> --json`; failure,
 cancellation or timeout blocks the shell call and leaves placement pending. This
 check uses the configured executable and never starts a runtime. Parent checks
 have a five-second deadline, leaving time for tool feedback and cleanup.
+
+Before update --importance important, the gate reads the target and verifies its
+current parent_id with a second show. An orphan or invalid/missing parent blocks
+the update; attach the record under a real parent first. Current rsrs update does
+not expose parent-changing flags; the gate rejects those unsupported options,
+without claiming they could otherwise perform a parent change.
 
 Known read commands and unrelated tools pass unchanged. Current remember/update
 metadata flags remain supported. Recognized writes in compound commands, command

@@ -78,6 +78,12 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   })
   const unsafe = [
     'rsrs remember fact --importance important',
+    `rsrs >out remember fact --importance important --force`,
+    `rsrs --json 2>out remember fact --importance important --force`,
+    `2>/dev/null rsrs remember fact --importance important --force`,
+    `2>&1 rsrs remember fact --importance important --force`,
+    `rsrs 2>&1 remember fact --importance important --force`,
+    `rsrs remember fact --merge-ids ${parent} --importance trivial`,
     `rsrs remember 'fact --parent ${parent}' --importance important`,
     'rsrs remember fact --importance important --parent ""',
     `rsrs remember fact --importance important --force --parent ${parent}`,
@@ -106,10 +112,42 @@ test('registers stable rules, appends current-step recall, preserves downstream 
     assert.equal((await gate.tool('pwsh', `${prefix} remember fact --importance important --parent ${parent}`)).kind, 'allow')
   }
   assert.equal(gate.calls.length, 5)
-  for (const command of ['rsrs show abcdef01 --json', 'rsrs recall remember --titles --json', 'rsrs recall rsrs --project remember', 'echo rsrs remember --importance important', 'rsrs --json --client-only recall remember --titles', 'rsrs --model-task-id remember --json --client-only recall remember', 'echo \'rsrs remember fact --importance important\'', 'echo ordinary', `rsrs update ${parent} --content 'fact'`, 'rsrs remember diary --importance trivial']) {
+  for (const command of ['rsrs show abcdef01 --json', 'rsrs recall remember --titles --json', 'rsrs >out recall remember --titles', '2>/dev/null rsrs recall remember --titles', 'rsrs recall rsrs --project remember', 'echo rsrs remember --importance important', 'rsrs --json --client-only recall remember --titles', 'rsrs --model-task-id remember --json --client-only recall remember', 'echo \'rsrs remember fact --importance important\'', 'echo ordinary', `rsrs update ${parent} --content 'fact'`, 'rsrs remember diary --importance trivial']) {
     assert.equal((await gate.tool('bash', command)).kind, 'allow', command)
   }
   assert.equal(gate.calls.length, 5, 'reads and updates without a parent change need no parent query')
+  assert.equal((await gate.tool('bash', `rsrs remember 'fact >out --parent fake' --importance trivial --merge-ids abcdef0100004000 --parent ${parent}`)).kind, 'allow')
+  const target = 'bcdef012-0000-4000-8000-000000000000'
+  let attached = parent, live = true, targetStatus = 'ok'
+  const promotion = harness({}, args => {
+    const id = args[2]
+    if (id === target && targetStatus !== 'ok') return { status: targetStatus }
+    if (id === parent && !live) return { status: 'fail' }
+    return { status: 'ok', summary: { id }, details: { entry: { id, content: 'Existing record', parent_id: id === target ? attached : '' } } }
+  })
+  assert.equal((await promotion.tool('pwsh', `rsrs update ${target} --importance important`)).kind, 'allow')
+  assert.deepEqual(promotion.calls.map(args => args[2]), [target, parent])
+  for (const invalid of ['', 'none', target, null, 42]) {
+    attached = invalid
+    const before = promotion.calls.length, bodies = promotion.dispatched.length
+    const denied = await promotion.tool('bash', `rsrs update ${target} --importance important`)
+    assert.equal(denied.kind, 'deny')
+    assert.match(denied.reason, /attach this record/)
+    assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
+    assert.equal(promotion.dispatched.length, bodies)
+  }
+  attached = parent; live = false
+  const before = promotion.calls.length, bodies = promotion.dispatched.length
+  assert.equal((await promotion.tool('terminal_send', `rsrs update ${target} --importance important`)).kind, 'deny')
+  assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target, parent])
+  assert.equal(promotion.dispatched.length, bodies)
+  for (const status of ['fail', 'skip']) {
+    targetStatus = status
+    const before = promotion.calls.length, bodies = promotion.dispatched.length
+    assert.equal((await promotion.tool('bash', `rsrs update ${target} --importance important`)).kind, 'deny')
+    assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
+    assert.equal(promotion.dispatched.length, bodies)
+  }
   const absent = harness({}, () => ({ status: 'ok', summary: {}, details: {} }))
   assert.equal((await absent.tool('bash', `rsrs update ${parent} --parent ${parent}`)).kind, 'deny')
   assert.equal(absent.dispatched.length, 0)
@@ -118,7 +156,7 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.equal(failed.dispatched.length, 0)
   const off = harness({ enabled: false }, () => assert.fail('disabled plugin must not query the engine'))
   assert.equal((await off.tool('bash', unsafe[0])).kind, 'allow')
-  for (const fixture of [gate, absent, failed, off]) await fixture.ctx.fiber.dispose()
+  for (const fixture of [gate, promotion, absent, failed, off]) await fixture.ctx.fiber.dispose()
   await h.ctx.fiber.dispose()
 })
 

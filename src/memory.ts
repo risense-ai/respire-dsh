@@ -12,7 +12,7 @@ When wrapping up, store new facts, decisions, agreements, or lessons per the rul
 
 
 // This recognizes literal CLI calls only; scripts and aliases are not a shell sandbox.
-export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: string, reason?: string } | undefined {
+export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: string, target?: string, reason?: string } | undefined {
   if (typeof command !== 'string') return
   const tokens: string[] = []
   let word = '', quote = '', started = false, complex = false
@@ -31,7 +31,10 @@ export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: s
       if (char === '\n' || char === '\r') complex = true
       flush()
     } else if (/[;&|<>(){}]/.test(char)) {
-      flush(); tokens.push(char)
+      flush()
+      if (char === '&' && ['<', '>'].includes(tokens.at(-1) ?? '')) tokens[tokens.length - 1] += '&'
+      else if (char === '>' && tokens.at(-1) === '&') tokens[tokens.length - 1] = '&>'
+      else tokens.push(char)
       if (!(char === '&' && tokens.length === 1)) complex = true
     } else {
       word += char; started = true
@@ -44,20 +47,29 @@ export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: s
   const basename = (value: string) => (value.replace(/\\/g, '/').split('/').at(-1) ?? '').toLowerCase()
   const isRsrs = (value: string) => /^(?:rsrs|respire)(?:\.exe|\.cmd)?$/i.test(basename(value))
     || value === executable
+  const redirection = (value: string | undefined) => /^(?:[<>]&?|&>)$/.test(value ?? '')
+  const afterRedirect = (at: number) => {
+    const original = at
+    if (/^\d+$/.test(tokens[at] ?? '') && redirection(tokens[at + 1])) at++
+    if (!redirection(tokens[at])) return original
+    while (redirection(tokens[at])) at++
+    return at + 1
+  }
   const writes: { start: number, command: string, args: string[] }[] = []
   for (let i = 0; i < tokens.length; i++) {
     if (!isRsrs(tokens[i]!)) continue
     let start = 0
     for (let k = 0; k < i; k++) if ([';', '&', '|', '(', ')', '{', '}'].includes(tokens[k] ?? '')) start = k + 1
     while (start < i) {
-      if (/^\d+$/.test(tokens[start] ?? '') && ['<', '>'].includes(tokens[start + 1] ?? '')) start++
-      if (!['<', '>'].includes(tokens[start] ?? '')) break
-      while (['<', '>'].includes(tokens[start] ?? '')) start++
-      start++ // Skip the redirection target, not the command.
+      const redirected = afterRedirect(start)
+      if (redirected === start) break
+      start = redirected
     }
     if (start !== i && !/^(?:npx|npm|pnpm|yarn|env|sudo|command|exec|nohup|cmd|powershell|pwsh|bash|sh)$/.test(tokens[start] ?? '')) continue
     let j = i + 1
     while (j < tokens.length) {
+      const redirected = afterRedirect(j)
+      if (redirected !== j) { j = redirected; continue }
       if (['--client-only', '--json'].includes(tokens[j] ?? '')) j++
       else if (['--model-task-id', '--progress-id'].includes(tokens[j] ?? '')) j += 2
       else if (/^--(?:model-task-id|progress-id)=/.test(tokens[j] ?? '')) j++
@@ -77,19 +89,20 @@ export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: s
   if (complex || writes.length !== 1 || write.start !== (tokens[0] === '&' ? 1 : 0)) {
     return deny('the recognized write uses compound, dynamic or unsupported shell syntax.')
   }
-  const values = new Map()
+  const values = new Map<string, string>()
+  const positional: string[] = []
   const flags = new Set(['--title', '--content', '--tags', '--project', '--computer', '--emotion',
     '--importance', '--parent', '--type', '--kind', '--merge-ids', '--supersedes', '--see-also',
     '--summary', '--source-refs', '--valid-until', '--review-at', '--artifact', '--model-task-id', '--progress-id'])
   for (let i = 0; i < write.args.length; i++) {
     const arg = write.args[i]!
-    if (arg === '--') break
-    if (!arg.startsWith('-')) continue
+    if (arg === '--') { positional.push(...write.args.slice(i + 1)); break }
+    if (!arg.startsWith('-')) { positional.push(arg); continue }
     const equal = arg.indexOf('=')
     const flag = equal === -1 ? arg : arg.slice(0, equal)
     if (flag === '--help' || flag === '-h') return
     if (['--json', '--client-only', '--clear-summary', '--clear-source-refs', '--clear-valid-until', '--clear-review-at', '--clear-artifact'].includes(flag)) continue
-    if (['--force', '--clear-parent', '--no-parent'].includes(flag)) return deny('force and clearing parent links are not permitted.')
+    if (['--force', '--clear-parent', '--no-parent'].includes(flag)) return deny('force and unsupported parent-changing options are not permitted.')
     if (!flags.has(flag)) return deny('a write option cannot be validated.')
     const value = equal === -1 ? write.args[++i] : arg.slice(equal + 1)
     if (value === undefined || value.startsWith('--') || values.has(flag)) return deny('a write argument is missing or ambiguous.')
@@ -99,8 +112,18 @@ export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: s
   if (parent !== undefined && !/^(?:[0-9a-f]{8,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(parent)) {
     return deny('the parent must be a nonempty literal record ID.')
   }
-  if ((values.get('--importance') ?? 'trivial').toLowerCase() === 'important' && !parent) {
-    return deny('an important record requires a real parent ID.')
+  const important = (values.get('--importance') ?? 'trivial').toLowerCase() === 'important'
+  if (write.command === 'update') {
+    if (parent !== undefined) return deny('current update does not accept parent changes; attach the record first.')
+    if (important) {
+      const target = positional[0]
+      if (positional.length !== 1 || !target || !/^(?:[0-9a-f]{8,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(target)) {
+        return deny('the importance update requires one literal target ID.')
+      }
+      return { target }
+    }
+  } else if ((important || values.has('--merge-ids')) && !parent) {
+    return deny('important records and merges require an explicit real parent ID.')
   }
   return { parent }
 }
@@ -110,6 +133,13 @@ export function parentExists(doc: Envelope, parent: string) {
   return doc?.status === 'ok' && typeof summary?.id === 'string'
     && summary.id.toLowerCase().startsWith(parent.toLowerCase())
     && RECORD_ID.test(summary.id) && entry?.id === summary.id && typeof entry?.content === 'string'
+}
+
+export function currentParent(doc: Envelope, target: string): string | undefined {
+  const entry = record(record(doc.details)?.entry)
+  const parent = entry?.parent_id
+  return parentExists(doc, target) && typeof parent === 'string' && RECORD_ID.test(parent)
+    && parent !== entry?.id ? parent : undefined
 }
 
 export const STORE_PREFIX = /^(?:记|存|记录|记住|remember)\s*[:：]\s*/i
