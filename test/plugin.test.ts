@@ -98,7 +98,7 @@ test('explicit prefix delegates curation without writing and leaves the reminder
   const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
   const result = await h.step([human('记：项目采用 TypeScript')])
   const text = textOf(result)
-  for (const phrase of ['Nothing was written', 'hook made no write request', 'Read prompt and agent-config', 'show their full bodies', 'prefer update, then an authorized merge, then attach, then a new record', 'taxonomy --list or tree', 'no justified parent exists, remain pending', 'never execute the engineering task']) assert.ok(text.includes(phrase), phrase)
+  for (const phrase of ['Nothing was written', 'hook made no write request', 'you MUST read prompt and agent-config', 'show their full bodies', 'Prefer update, then an authorized merge, then attach, then a new record', 'taxonomy --list or tree', 'permitted ONLY AFTER', 'DO NOT retry automatically or claim success', 'Verification does not authorize an automatic retry', 'After every actual write, you MUST read it back with show', 'no justified parent exists, you MUST remain pending', 'DO NOT execute the engineering task']) assert.ok(text.includes(phrase), phrase)
   assert.doesNotMatch(text, /Saved:|may have been written/)
   assert.deepEqual(h.calls.map(args => args[1]), ['status'])
   await h.stop()
@@ -109,11 +109,11 @@ test('all prefixes stay pending without writes and duplicate accepted inputs are
   const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
   for (const [index, prefix] of ['记：', '存：', '记录：', '记住：', 'remember:'].entries()) {
     const user = human(`${prefix}项目采用 TypeScript`)
-    assert.match(textOf(await h.step([user], index + 1)), /Complete this storage request in this turn/)
+    assert.match(textOf(await h.step([user], index + 1)), /MUST resolve this storage request in this turn/)
     await h.step([user], index + 1)
   }
   assert.deepEqual(h.calls.map(args => args[1]), ['status'])
-  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /hook pending does not prohibit the first policy-compliant write/)
+  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Hook pending does not prohibit the first policy-compliant write/)
 })
 
 test('empty store and suspected credentials never reach remember or recall', async () => {
