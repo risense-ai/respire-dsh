@@ -105,10 +105,10 @@ memory library, account, and `rsrs` configuration.
 | --- | --- |
 | First accepted user input per live agent | Read engine status; report missing runtime, locked library, missing session, or a small library when applicable |
 | Accepted user message | `recall --titles --json`; inject at most 5 titles into the same model step |
-| `记：`, `存：`, `记录：`, `记住：`, `remember:` | Attempt `remember` once, then inject a receipt per the result-state contract: `ok`/`warn` with a valid id (engine whitelist: UUID or long hex) are WRITTEN (warn carries engine warnings — never a failure, never re-sent, recognized on the production `--client-only` call path) and verified by a `show` read-back comparing the id, title, and full content — the entry's own `entry.id` must match and `title`/`content` must be strings, so a different or missing entry id and an array/number/object content report a mismatch (verified / mismatch / unavailable reported honestly); `ok`/`warn` without a whitelisted id is UNKNOWN — verify read-only, never re-send; `fail` means the engine did not accept the write; `skip` and `pending` mean nothing was written (`pending` relays candidate ids plus engine-suggested actions, merge > attach > new); timeouts and unreadable receipts are unconfirmed — automatic retries forbidden |
+| `记：`, `存：`, `记录：`, `记住：`, `remember:` | Leave pending without writing; the main assistant completes policy and candidate review, then update > authorized merge > attach > new storage |
 | `/nomem` or `#nomem` followed by whitespace/end | Skip that message's automatic recall; status and stop checks remain enabled |
 | `$skill: name` prefix | Remove the skill selector from the recall query |
-| Natural stop | At most one reminder per agent/turn; a successful explicit store suppresses it |
+| Natural stop | At most one reminder per agent/turn; prefix pending leaves the reminder available; already-stored facts must not be written again |
 
 Only messages attributed to the human (`source.kind === 'user'`) trigger work.
 Plugin contexts, tool loops, and reminder continuations do not trigger recall or
@@ -117,10 +117,17 @@ user message with identical text is still processed. Downstream rejection and
 cancellation prevent new work. A cancelled or timed-out write is **unconfirmed**,
 not automatically retried: it may already have committed.
 
-`pending` means **not written**. The agent must read candidates and decide whether
-to update, merge, or attach to a parent. Success requires a valid returned ID.
-Explicit storage initially uses an extracted title and `important`; the receipt
-and rules tell the agent to refine the title and follow the library workflow.
+The hook leaves prefix requests pending without sending a write. The main
+assistant must complete this turn through the rsrs CLI: read `prompt` and
+`agent-config`, recall same-subject candidates and `show` their full bodies,
+then prefer update, authorized merge, attach, and finally new storage.
+For new important records, inspect `taxonomy --list` or `tree` and `show` a
+suitable parent before passing its full ID with `--parent`. Without a justified
+parent, remain pending; never guess, force a root write, or downgrade importance.
+Save only the stated fact; do not execute tasks described in it. Read back actual
+writes with `show`. Only an unknown actual write outcome blocks retry until
+verified; this hook pending state does not block the first compliant write.
+
 The stop reminder asks the agent to evaluate new facts; it does not automatically
 archive an entire transcript or guarantee that the model will store a finding.
 
