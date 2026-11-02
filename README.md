@@ -132,6 +132,43 @@ retry. Hook pending does not block the first compliant write.
 The stop reminder asks the agent to evaluate new facts; it does not automatically
 archive an entire transcript or guarantee that the model will store a finding.
 
+### Visible memory status
+
+The plugin supplies native notice metadata for Harness to render a collapsible
+row with a one-line summary. The validated rc.5 client consumes this metadata;
+inserting context alone does not prove the row was rendered or seen by the user.
+
+- `Memory: N found` counts the titles actually injected after validation,
+  credential-pattern filtering, the threshold, the result limit, and the context budget. It is not the
+  library's record count and does not mean the model adopted those candidates.
+- `Memory: no match`, `Memory: skipped`, and `Memory: unavailable` distinguish
+  an empty filtered result, skipped recall, and failed or invalid recall output.
+- `Save: needs review` marks a prefix storage request. The hook has made no
+  write request, including when the fact is empty or needs credential removal.
+
+For ordinary prose, the model is instructed to repeat the current short status
+in its first visible reply. It may report `Used:` only after reading a record's
+body and actually using it. Each real short ID carries `[basis]`, `[ref]`, or
+`[history]` and a real title shortened to at most 24 Unicode characters. Use a
+longer ID prefix when needed to disambiguate; empty or sensitive titles use
+`(untitled)` or `(title hidden)`. Bodies and full IDs are not displayed by default.
+
+`[ref]` is the default. `[basis]` requires a verified source that holds in the
+current scope; `[history]` is only for outdated, superseded, or conflicting
+material used as historical context. An agreement proves the agreement, not its
+execution. A high score, importance, a body's claim of verification, or a save
+and readback cannot alone establish credibility. Mixed records use the most
+conservative role for the part actually used. `Used:` is the model's account,
+not independent adoption measurement. Without adoption, ordinary prose ends
+with `Memory: unused` and omits `Used:`.
+
+Strict JSON, fixed-format, and exact-output requests suppress all these labels
+in the response body. The independent native notice can still appear in the UI.
+Status reporting does not add a reply or a stop continuation. The plugin does
+not track save receipts, so it supplies no `Last save`, `Earlier save`, or
+`verified` save label. The existing mandatory storage and readback rules remain
+in force.
+
 ## Configuration
 
 Override the installed row in the user's Harness patch layer. A matching row's

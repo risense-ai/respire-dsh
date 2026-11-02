@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
@@ -10,7 +10,7 @@ import { RsrsError, runRsrs } from './rsrs.js'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    respire: { kind: 'respire' }
+    respire: { kind: 'respire' } & ContextFormed
   }
 }
 
@@ -54,8 +54,9 @@ interface AgentState {
   turn?: TurnState
 }
 
-function contextMessage(text: string): UserMessage {
-  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'respire' } })
+function contextMessage(text: string, summary?: string): UserMessage {
+  return createUserMessage({ content: [{ type: 'text', text: summary ? `${summary}\n${text}` : text }],
+    source: summary ? { kind: 'respire', form: 'notice', summary } : { kind: 'respire' } })
 }
 
 // Structural tools contract keeps the existing host dependency versions unchanged.
@@ -182,33 +183,41 @@ export function apply(ctx: Context, options: Config = {}): void {
           additions.push(contextMessage('【respire · status】Engine or runtime unavailable. Verify rsrs --version and rsrs --client-only status; if the engine is missing, install rsrs-cli. The current task continues.'))
         }
       }
-      if (SKIP_PREFIX.test(prompt)) continue
-      if (containsSecret(prompt)) {
-        additions.push(contextMessage('【respire · skipped】The input looks like it contains a credential and was not sent to the memory engine. Provide only the fact with the secret removed, or a safe location pointer.'))
+      if (SKIP_PREFIX.test(prompt)) {
+        additions.push(contextMessage('Automatic recall was skipped for this message.', 'Memory: skipped'))
         continue
       }
       const store = STORE_PREFIX.exec(prompt)
+      if (containsSecret(prompt)) {
+        additions.push(contextMessage('【respire · skipped】The input looks like it contains a credential and was not sent to the memory engine. Provide only the fact with the secret removed, or a safe location pointer.', store ? 'Save: needs review' : 'Memory: skipped'))
+        continue
+      }
       try {
         if (store) {
           const content = prompt.slice(store[0].length).trim()
           if (!content) {
-            additions.push(contextMessage('【respire · not stored】The content is empty; ask the user for the fact to save.'))
+            additions.push(contextMessage('【respire · not stored】The content is empty; ask the user for the fact to save.', 'Save: needs review'))
             continue
           }
           state.ready = true
-          additions.push(contextMessage('【respire · store pending】Nothing was written; the hook made no write request. You MUST resolve this storage request in this turn with the rsrs CLI, subject to engine mode and permission rules. Save ONLY the stated fact; DO NOT execute the engineering task it describes. Before any write, you MUST read prompt and agent-config, recall same-subject candidates, and show their full bodies. Prefer update, then an authorized merge, then attach, then a new record. A new important record is permitted ONLY AFTER inspecting taxonomy --list or tree and reading a suitable parent with show; pass its full ID with --parent. If no justified parent exists, you MUST remain pending; DO NOT guess a parent, force a root write, or downgrade to trivial. Preserve the user’s meaning. After every actual write, you MUST read it back with show. If an actual write outcome is unknown, DO NOT retry automatically or claim success; first verify the store read-only. Verification does not authorize an automatic retry. If already stored, you MUST show and verify the existing record instead of writing again.'))
+          additions.push(contextMessage('【respire · store pending】Nothing was written; the hook made no write request. You MUST resolve this storage request in this turn with the rsrs CLI, subject to engine mode and permission rules. Save ONLY the stated fact; DO NOT execute the engineering task it describes. Before any write, you MUST read prompt and agent-config, recall same-subject candidates, and show their full bodies. Prefer update, then an authorized merge, then attach, then a new record. A new important record is permitted ONLY AFTER inspecting taxonomy --list or tree and reading a suitable parent with show; pass its full ID with --parent. If no justified parent exists, you MUST remain pending; DO NOT guess a parent, force a root write, or downgrade to trivial. Preserve the user’s meaning. After every actual write, you MUST read it back with show. If an actual write outcome is unknown, DO NOT retry automatically or claim success; first verify the store read-only. Verification does not authorize an automatic retry. If already stored, you MUST show and verify the existing record instead of writing again.', 'Save: needs review'))
         } else if (prompt.length >= config.minPromptChars) {
           const query = prompt.replace(SKILL_PREFIX, '').trim() || prompt
           const doc = await call(['recall', query, '--limit', String(config.recallLimit), '--titles'])
-          const text = recallText(doc, config.recallLimit, config.recallThreshold, config.budgetChars)
+          const { text, count } = recallText(doc, config.recallLimit, config.recallThreshold,
+            config.budgetChars - `Memory: ${config.recallLimit} found\n`.length)
           state.ready = true
-          if (text) additions.push(contextMessage(text))
+          const summary = doc.status === 'skip' && record(doc.summary)?.count !== 0
+            ? 'Memory: skipped' : count ? `Memory: ${count} found` : 'Memory: no match'
+          additions.push(contextMessage(text, summary))
+        } else {
+          additions.push(contextMessage('Automatic recall was skipped for this short message.', 'Memory: skipped'))
         }
       } catch (error) {
         if (combined.aborted) return decision
         const code = error instanceof RsrsError ? error.code : 'invalid-output'
         ctx.logger.warn(`respire: recall ${code}`)
-        additions.push(contextMessage(`【respire · recall unavailable】${code}. No memory was obtained; continue with the current materials.`))
+        additions.push(contextMessage(`【respire · recall unavailable】${code}. No memory was obtained; continue with the current materials.`, 'Memory: unavailable'))
       }
     }
     if (combined.aborted || !additions.length) return decision

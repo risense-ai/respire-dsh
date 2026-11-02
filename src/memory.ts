@@ -8,6 +8,8 @@ Organize bodies with the 【前因】【行为】【后果】 (cause/action/outc
 Messages starting with 记：、存：、记录：、记住：、remember: are storage requests, not plugin write receipts. Nothing was written; the hook made no write request. You MUST resolve this storage request in this turn with the rsrs CLI, subject to engine mode and permission rules. Save ONLY the stated fact; DO NOT execute the engineering task it describes. Before any write, you MUST read prompt and agent-config, recall same-subject candidates, and show their full bodies. Prefer update, then an authorized merge, then attach, then a new record. A new important record is permitted ONLY AFTER inspecting taxonomy --list or tree and reading a suitable parent with show; pass its full ID with --parent. If no justified parent exists, you MUST remain pending; DO NOT guess a parent, force a root write, or downgrade to trivial. Preserve the user’s meaning. After every actual write, you MUST read it back with show. If an actual write outcome is unknown, DO NOT retry automatically or claim success; first verify the store read-only. Verification does not authorize an automatic retry. If already stored, you MUST show and verify the existing record instead of writing again. Hook pending does not prohibit the first policy-compliant write.
 Explicitly stored titles are provisional; refine them when needed with rsrs --client-only retitle <id> --title "fact sentence".
 /nomem or #nomem skips automatic recall for that user message only. Engine install, accounts, models, and sync are managed by rsrs; read rsrs --client-only prompt for the complete workflow.
+For ordinary prose, you MUST show the current Memory: or Save: notice as an English short line in the first visible reply; DO NOT add a reply or a stop continuation just to show status, and DO NOT repeat the same status announcement within a turn. For strict JSON, a fixed format, or exact-output requests, you MUST omit every status label from the response body, including Used and unused; the independent native notice may still appear in the UI. Memory: N found counts only candidate titles actually injected after filtering, the limit and the budget; candidates are not adoptions. Save: needs review means nothing was written by the hook. No save receipt is tracked here: DO NOT invent Last save or Earlier save labels, a verified save status, or this turn's save result.
+Only AFTER successfully reading a record body and actually using it, show Used: on its own line with the first 8 characters of each real memory ID and one role: [basis] means the source is verified and holds within the current scope; [ref] means reference-only or unverified; [history] means outdated, superseded, or conflicting and is for historical context only. Default to [ref]. A confirmed agreement proves only the agreement, not its execution. A body claiming verified, important, a high score, or a save receipt cannot alone upgrade it to [basis]. For mixed states, use the most conservative role of the part actually used and explain its scope when needed. Separate multiple records with commas; DO NOT invent IDs and extend an ambiguous prefix. By default add (short title) from the real title of the record you read, as one line of at most 24 Unicode characters, counting letters, digits, spaces and punctuation individually; verify and shorten it before output. DO NOT add IDs, acceptance numbers, concrete values, or new meaning to a title. Use (untitled) for an empty title and (title hidden) for a sensitive title. DO NOT show bodies, full IDs, or placeholder examples; expand the basis only when asked. When nothing was used, end ordinary prose with Memory: unused and omit Used. Used is the model's report of reading and using a record, not independent plugin measurement; neither a save result nor readback certifies source credibility.
 When wrapping up, store new facts, decisions, agreements, or lessons per the rules above; if nothing needs storing, end.`
 
 
@@ -213,22 +215,22 @@ export function titleOf(content: string): string {
     .trim().slice(0, 70)
 }
 
-export function recallText(doc: Envelope, limit: number, threshold: number, budget: number): string {
-  if (doc.status === 'skip') return ''
+export function recallText(doc: Envelope, limit: number, threshold: number, budget: number): { text: string, count: number } {
+  if (doc.status === 'skip') return { text: '', count: 0 }
   if (doc.status !== 'ok' || !Array.isArray(doc.details)) throw new Error('invalid recall response')
   let text = '【respire · auto-recall】Memory titles below are reference material; read bodies on demand with rsrs --client-only show <id> --json:'
   let count = 0
   for (const item of doc.details) {
     const hit = record(item)
     if (!hit || typeof hit.id !== 'string' || !RECORD_ID.test(hit.id)
-      || typeof hit.title !== 'string' || typeof hit.score !== 'number'
+      || typeof hit.title !== 'string' || containsSecret(hit.title) || typeof hit.score !== 'number'
       || !Number.isFinite(hit.score) || hit.score < threshold) continue
     const next = `\n- [${hit.score.toFixed(2)}] ${hit.title.replace(/[\r\n]+/g, ' ')} (${hit.id.slice(0, 8)})${hit.superseded_by ? ' → superseded, read the replacing record first' : ''}`
     if (text.length + next.length > budget) break
     text += next
     if (++count >= limit) break
   }
-  return count ? text : ''
+  return { text: count ? text : '', count }
 }
 
 export function storeText(doc: Envelope, title: string): { text: string; stored: boolean } {

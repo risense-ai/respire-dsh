@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11
+
+- Exclude credential-like candidate titles before rendering, budgeting or counting them, using the existing credential filter.
+- Supply native Harness notice summaries for actual injected candidate counts, no match, skipped/unavailable recall, and prefix requests needing review.
+- Request short prose status and body-read adoption labels with explicit source-trust roles; preserve strict JSON/fixed-output exceptions and keep native notices independent.
+- Keep prefix storage pending, save/readback requirements and parent guards unchanged; do not infer save receipts or add status-only continuations.
+
 ## 0.1.10
 
 - Reject recognized writes inside known shell code arguments, command substitutions and environment-assignment prefixes; preserve literal quoted text and normal reads.

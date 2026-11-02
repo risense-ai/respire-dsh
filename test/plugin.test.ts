@@ -69,6 +69,11 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.equal(result.startsRequestSeries, true)
   assert.match(textOf(result), /项目使用原生插件/)
   assert.equal(result.messages[1].source.kind, 'respire')
+  assert.equal(result.messages[1].source.form, 'notice')
+  assert.equal(result.messages[1].source.summary, 'Memory: 1 found')
+  assert.match(result.messages[1].content[0].text, /^Memory: 1 found\n/)
+  const rules = (await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text
+  for (const phrase of ['strict JSON', 'omit every status label from the response body', 'independent native notice', 'Only AFTER successfully reading a record body and actually using it', '[basis]', '[ref]', '[history]', 'Default to [ref]', 'not its execution', 'cannot alone upgrade it to [basis]', 'most conservative role', 'DO NOT invent IDs', 'extend an ambiguous prefix', '24 Unicode characters', '(untitled)', '(title hidden)', 'DO NOT show bodies, full IDs', 'Memory: unused', 'not independent plugin measurement', 'DO NOT invent Last save']) assert.ok(rules.includes(phrase), phrase)
   assert.deepEqual(h.calls[1], ['--client-only', 'recall', 'Respire 原生插件', '--limit', '5', '--titles', '--json'])
   assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Memory is reference material/)
   const parent = hit.id
@@ -215,7 +220,9 @@ test('same text in a new real user message can be recalled again', async () => {
 
 test('/nomem skips only automatic recall; skill prefix is removed', async () => {
   const h = harness()
-  await h.step([human('/nomem 项目约定')])
+  const skipped = await h.step([human('/nomem 项目约定')])
+  assert.equal(skipped.messages.at(-1).source.summary, 'Memory: skipped')
+  assert.equal(skipped.messages.at(-1).source.form, 'notice')
   assert.equal(h.calls.length, 1)
   await h.step([human('$skill: respire 项目约定')], 2)
   assert.equal(h.calls[1][2], '项目约定')
@@ -225,6 +232,10 @@ test('explicit prefix delegates curation without writing and leaves the reminder
   const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
   const result = await h.step([human('记：项目采用 TypeScript')])
   const text = textOf(result)
+  assert.equal(result.messages.at(-1).source.summary, 'Save: needs review')
+  assert.equal(result.messages.at(-1).source.form, 'notice')
+  assert.match(text, /Save: needs review/)
+  assert.doesNotMatch(text, /Last save:|Earlier save:|Save: verified|Used:/)
   for (const phrase of ['Nothing was written', 'hook made no write request', 'you MUST read prompt and agent-config', 'show their full bodies', 'Prefer update, then an authorized merge, then attach, then a new record', 'taxonomy --list or tree', 'permitted ONLY AFTER', 'DO NOT retry automatically or claim success', 'Verification does not authorize an automatic retry', 'After every actual write, you MUST read it back with show', 'no justified parent exists, you MUST remain pending', 'DO NOT execute the engineering task']) assert.ok(text.includes(phrase), phrase)
   assert.doesNotMatch(text, /Saved:|may have been written/)
   assert.deepEqual(h.calls.map(args => args[1]), ['status'])
@@ -245,9 +256,14 @@ test('all prefixes stay pending without writes and duplicate accepted inputs are
 
 test('empty store and suspected credentials never reach remember or recall', async () => {
   const h = harness()
-  assert.match(textOf(await h.step([human('记：')])), /content is empty|The content is empty/)
-  assert.match(textOf(await h.step([human('记：password: synthetic-example')], 2)), /contains a credential/)
-  await h.step([human('api_key=synthetic-example')], 3)
+  const empty = await h.step([human('记：')])
+  assert.match(textOf(empty), /content is empty|The content is empty/)
+  assert.equal(empty.messages.at(-1).source.summary, 'Save: needs review')
+  const secret = await h.step([human('记：password: synthetic-example')], 2)
+  assert.match(textOf(secret), /contains a credential/)
+  assert.equal(secret.messages.at(-1).source.summary, 'Save: needs review')
+  const skipped = await h.step([human('api_key=synthetic-example')], 3)
+  assert.equal(skipped.messages.at(-1).source.summary, 'Memory: skipped')
   assert.equal(h.calls.length, 1)
 })
 
@@ -259,6 +275,7 @@ test('stop reminds once per turn, and the next real turn gets its own reminder',
   await h.step(h.notices)
   await h.stop()
   assert.equal(h.notices.length, 1)
+  assert.equal(h.notices[0].source.form, undefined, 'status must not create another visible stop notice')
   await h.step([human('新的项目约定')], 2)
   await h.stop(2)
   assert.equal(h.notices.length, 2)
@@ -313,14 +330,50 @@ test('config rejects non-integral limits and unsafe deadlines', () => {
   assert.equal(Config({}).recallLimit, 5)
 })
 
-test('title results respect limits, threshold, budget, and superseded markers', () => {
+test('title results respect limits, threshold, budget, and superseded markers', async () => {
   const doc = { status: 'ok', details: [hit, { ...hit, score: 0.1 }, { ...hit, superseded_by: 'new-id' }] }
-  assert.match(recallText(doc, 5, 0.5, 1500), /superseded/)
-  assert.equal((recallText(doc, 1, 0, 1500).match(/abcdef01/g) ?? []).length, 1)
-  assert.equal(recallText({ status: 'ok', details: [{ ...hit, title: 'x'.repeat(2000) }] }, 5, 0, 200), '')
-  assert.equal(recallText({ status: 'skip' }, 5, 0, 1500), '')
+  const sensitive = { ...hit, id: '12345678-0000-4000-8000-000000000000', title: 'api_key=' + 'PRIVATE_TITLE_CANARY'.repeat(150) }
+  assert.equal(containsSecret(sensitive.title), true)
+  const safe = recallText({ status: 'ok', details: [sensitive, hit] }, 1, 0, 500)
+  assert.equal(safe.count, 1, 'sensitive titles consume neither result limit nor budget')
+  assert.ok(safe.text.includes(hit.title) && safe.text.includes(hit.id.slice(0, 8)))
+  assert.doesNotMatch(safe.text, /PRIVATE_TITLE_CANARY|12345678/)
+  assert.match(recallText(doc, 5, 0.5, 1500).text, /superseded/)
+  assert.equal(recallText(doc, 5, 0.5, 1500).count, 2)
+  assert.equal((recallText(doc, 1, 0, 1500).text.match(/abcdef01/g) ?? []).length, 1)
+  assert.equal(recallText(doc, 1, 0, 1500).count, 1)
+  assert.deepEqual(recallText({ status: 'ok', details: [{ ...hit, title: 'x'.repeat(2000) }] }, 5, 0, 200), { text: '', count: 0 })
+  assert.deepEqual(recallText({ status: 'skip' }, 5, 0, 1500), { text: '', count: 0 })
   assert.throws(() => recallText({ status: 'ok', details: {} }, 5, 0, 1500))
   assert.equal(storeText({ status: 'ok' }, 'title').stored, false)
+  for (const [response, options, summary] of [
+    [doc, { recallLimit: 1 }, 'Memory: 1 found'],
+    [{ status: 'ok', details: [sensitive, hit] }, { recallLimit: 1, budgetChars: 500 }, 'Memory: 1 found'],
+    [{ status: 'ok', details: [sensitive] }, {}, 'Memory: no match'],
+    [doc, { recallThreshold: 0.5 }, 'Memory: 2 found'],
+    [doc, { recallThreshold: 0.9 }, 'Memory: no match'],
+    [{ status: 'ok', summary: { count: 999 }, details: [] }, {}, 'Memory: no match'],
+    [{ status: 'ok', details: [{ ...hit, id: 'invalid' }] }, {}, 'Memory: no match'],
+    [{ status: 'ok', details: [{ ...hit, title: 'x'.repeat(2000) }] }, { budgetChars: 200 }, 'Memory: no match'],
+    [{ status: 'skip', summary: { count: 0 } }, {}, 'Memory: no match'],
+    [{ status: 'skip' }, {}, 'Memory: skipped'],
+    [{ status: 'skip', summary: { count: 999 } }, {}, 'Memory: skipped'],
+    [doc, { minPromptChars: 100 }, 'Memory: skipped'],
+    [{ status: 'ok', details: {} }, {}, 'Memory: unavailable'],
+    [new Error('private diagnostics'), {}, 'Memory: unavailable'],
+  ]) {
+    const fixture = harness(options, () => response)
+    const result = await fixture.step([human('recall project agreement')])
+    const notices = result.messages.filter(message => message.source.kind === 'respire' && message.source.form === 'notice')
+    assert.equal(notices.length, 1)
+    assert.equal(notices[0].source.summary, summary)
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_TITLE_CANARY|12345678/, 'sensitive candidates must not reach injected messages or notice metadata')
+    assert.ok(notices[0].content[0].text.startsWith(summary + '\n'))
+    assert.doesNotMatch(notices[0].content[0].text, /private diagnostics|Used:|Last save:|Save: verified/)
+    assert.ok(fixture.calls.every(args => ['status', 'recall'].includes(args[1])))
+    if (summary.includes('found')) assert.ok(notices[0].content[0].text.length <= (options.budgetChars ?? 1500))
+    await fixture.ctx.fiber.dispose()
+  }
 })
 
 test('store receipts follow the result-state contract (warn written, pending relays actions)', () => {
@@ -381,7 +434,7 @@ test('record ids outside the engine whitelist (UUID or long hex) are unknown, ne
       assert.doesNotMatch(receipt.text, /Saved/)
     }
     // recall hits carrying such ids are dropped instead of advertised
-    assert.equal(recallText({ status: 'ok', details: [{ ...hit, id }] }, 5, 0, 1500), '')
+    assert.deepEqual(recallText({ status: 'ok', details: [{ ...hit, id }] }, 5, 0, 1500), { text: '', count: 0 })
   }
   // non-string ids stay unknown
   for (const id of [12345678, ['abcdef01-0000-4000-8000-000000000000'], { v: 1 }, null, true]) {
