@@ -5,7 +5,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
-import { containsSecret, currentParent, memoryWrite, parentExists, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
+import { containsSecret, currentParent, MCP_WRITE_DENIAL, memoryToolWrite, memoryWrite, parentExists, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
 import { RsrsError, runRsrs } from './rsrs.js'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -102,6 +102,7 @@ export function apply(ctx: Context, options: Config = {}): void {
   const checks = new WeakMap<MemoryExecution, { command: unknown, reason?: string }>()
   const unverified = 'Respire blocked this tool call before execution: parent validation did not complete. Keep placement pending; for important updates, attach the target first if it has no valid parent. DO NOT guess, force, downgrade, or automatically retry an earlier unknown write.'
   toolHost.tools.guard(exec => {
+    if (memoryToolWrite(exec.name)) return MCP_WRITE_DENIAL
     if (!memoryWrite(commandOf(exec), config.rsrsPath)) return
     const check = checks.get(exec)
     return check && check.command === commandOf(exec) ? check.reason : unverified
@@ -109,6 +110,7 @@ export function apply(ctx: Context, options: Config = {}): void {
   toolHost.on('tools/pre-execute', async (exec, next) => {
     const decision = await next()
     if (decision.kind !== 'allow') return decision
+    if (memoryToolWrite(exec.name)) return { kind: 'deny', reason: MCP_WRITE_DENIAL }
     const command = commandOf(exec)
     const write = memoryWrite(command, config.rsrsPath)
     if (!write) return decision

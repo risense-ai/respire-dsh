@@ -11,6 +11,12 @@ Explicitly stored titles are provisional; refine them when needed with rsrs --cl
 When wrapping up, store new facts, decisions, agreements, or lessons per the rules above; if nothing needs storing, end.`
 
 
+export function memoryToolWrite(name: unknown): boolean {
+  return typeof name === 'string' && /(?:^|__)memory_(?:remember|update)$/.test(name)
+}
+
+export const MCP_WRITE_DENIAL = "Respire blocked this tool call before execution: this memory tool's target library cannot be verified. Use one explicit rsrs command through the guarded shell tools. Keep placement pending; DO NOT automatically retry any earlier unknown write."
+
 // This recognizes literal CLI calls only; scripts and aliases are not a shell sandbox.
 export function memoryWrite(command: unknown, executable = 'rsrs'): { parent?: string, target?: string, reason?: string } | undefined {
   if (typeof command !== 'string') return

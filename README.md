@@ -227,6 +227,12 @@ the update; attach the record under a real parent first. Current rsrs update doe
 not expose parent-changing flags; the gate rejects those unsupported options,
 without claiming they could otherwise perform a parent change.
 
+Known memory_remember and memory_update tool basenames, including server-qualified
+MCP names, are blocked because their target library cannot be bound to this CLI.
+Use an explicit command through the guarded CLI tools instead; no automatic
+retry of an earlier unknown write is permitted. Other tool names pass unchanged.
+Opaque hashed or truncated MCP tool names cannot be mapped to raw basenames by this check.
+
 Known read commands and unrelated tools pass unchanged. Current remember/update
 metadata flags remain supported. Recognized writes in compound commands, command
 substitutions, wrappers or dynamic arguments are denied: use one explicit command

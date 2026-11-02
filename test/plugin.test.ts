@@ -49,7 +49,7 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
   return {
     ctx, calls, notices, agent, dispatched,
     tool: async (name, command, override = false) => {
-      const exec = { name, arguments: { [name === 'terminal_send' ? 'text' : 'command']: command }, agent, signal }
+      const exec = { name, arguments: command && typeof command === 'object' ? command : { [name === 'terminal_send' ? 'text' : 'command']: command }, agent, signal }
       let decision = await ctx.waterfall('tools/pre-execute', exec, async () => ({ kind: 'allow' }))
       if (override) decision = { kind: 'allow' }
       const denial = decision.kind === 'allow' ? guards.map(check => check(exec)).find(reason => reason !== undefined) : decision.reason
@@ -103,6 +103,11 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   for (const name of ['bash', 'pwsh', 'terminal_send']) {
     for (const command of unsafe) assert.equal((await gate.tool(name, command, true)).kind, 'deny', command)
   }
+  for (const name of ['memory_remember', 'memory_update', 'mcp__renamed__memory_remember', 'mcp__other__memory_update']) {
+    const denied = await gate.tool(name, { content: 'fact', importance: 'trivial', parent }, true)
+    assert.equal(denied.kind, 'deny')
+    assert.match(denied.reason, /target library cannot be verified/)
+  }
   assert.equal(gate.calls.length, 0)
   assert.equal(gate.dispatched.length, 0, 'monotonic guard must survive a later allow decision')
   for (const name of ['bash', 'pwsh', 'terminal_send']) {
@@ -115,6 +120,9 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   for (const command of ['rsrs show abcdef01 --json', 'rsrs recall remember --titles --json', 'rsrs >out recall remember --titles', '2>/dev/null rsrs recall remember --titles', 'rsrs recall rsrs --project remember', 'echo rsrs remember --importance important', 'rsrs --json --client-only recall remember --titles', 'rsrs --model-task-id remember --json --client-only recall remember', 'echo \'rsrs remember fact --importance important\'', 'echo ordinary', `rsrs update ${parent} --content 'fact'`, 'rsrs remember diary --importance trivial']) {
     assert.equal((await gate.tool('bash', command)).kind, 'allow', command)
   }
+  for (const name of ['memory_recall', 'mcp__other__memory_show', 'mcp__other__unrelated', 'memory_remember_extra']) {
+    assert.equal((await gate.tool(name, { query: 'remember' })).kind, 'allow')
+  }
   assert.equal(gate.calls.length, 5, 'reads and updates without a parent change need no parent query')
   assert.equal((await gate.tool('bash', `rsrs remember 'fact >out --parent fake' --importance trivial --merge-ids abcdef0100004000 --parent ${parent}`)).kind, 'allow')
   const target = 'bcdef012-0000-4000-8000-000000000000'
@@ -125,8 +133,11 @@ test('registers stable rules, appends current-step recall, preserves downstream 
     if (id === parent && !live) return { status: 'fail' }
     return { status: 'ok', summary: { id }, details: { entry: { id, content: 'Existing record', parent_id: id === target ? attached : '' } } }
   })
-  assert.equal((await promotion.tool('pwsh', `rsrs update ${target} --importance important`)).kind, 'allow')
-  assert.deepEqual(promotion.calls.map(args => args[2]), [target, parent])
+  for (const command of [`rsrs update ${target} --importance important`, `rsrs update --importance important ${target}`, `rsrs update --importance=important ${target}`]) {
+    const before = promotion.calls.length
+    assert.equal((await promotion.tool('pwsh', command)).kind, 'allow')
+    assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target, parent])
+  }
   for (const invalid of ['', 'none', target, target.toUpperCase(), target.slice(0, 8), null, 42]) {
     attached = invalid
     const before = promotion.calls.length, bodies = promotion.dispatched.length
