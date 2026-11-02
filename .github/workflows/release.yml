@@ -25,11 +25,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
+      - name: Require the tagged commit to be contained in main
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not contained in main; refusing to publish"
+            exit 1
+          fi
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - run: npm run verify:package
@@ -48,3 +57,26 @@ jobs:
           args=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then args+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" ./*.tgz SHA256SUMS --verify-tag --generate-notes "${args[@]}"
+  market-index:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: market-index-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+      - name: Regenerate plugin market index
+        shell: bash
+        run: node scripts/market-index.mjs
+      - name: Publish the index branch
+        shell: bash
+        run: bash scripts/publish-market-index.sh

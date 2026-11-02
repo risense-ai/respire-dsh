@@ -42,6 +42,12 @@ Ask me for a non-sensitive test fact before testing storage and check the actual
 record. Verify the stop reminder in a separate recall turn without a successful
 explicit store. Report the installed version, checks actually performed, and
 remaining user actions; do not claim end-to-end success before observing it.
+
+After the installation is verified, offer to configure market-based updates:
+enable Custom plugin markets in Harness, add the index source
+https://raw.githubusercontent.com/risense-ai/respire-dsh/market-index/marketplace.json,
+then confirm the Discover card reports the installed version. Do not install an
+update without my confirmation.
 ```
 
 ## Overview
@@ -98,6 +104,86 @@ If `@rsrsai/respire-dsh` is installed, remove that old bundle in Harness plugin
 management, then install `@rsrsai/dsh` as above. Disable the old bundle first if
 it is still in use; stop the profile if the manager requests it. Keep the existing
 memory library, account, and `rsrs` configuration.
+
+## Updates through the plugin market
+
+The npm registry remains the source of truth, but Harness can also discover,
+install and update `@rsrsai/dsh` from a **plugin market index** published by
+this repository (format 1, regenerated from npm by `scripts/market-index.mjs`
+after every tagged release):
+
+- `https://raw.githubusercontent.com/risense-ai/respire-dsh/market-index/marketplace.json`
+- mirror, when GitHub is unreachable: `https://cdn.jsdelivr.net/gh/risense-ai/respire-dsh@market-index/marketplace.json`
+
+The index is published on the dedicated `market-index` branch; the repository
+protects `main` with a pull-request ruleset, so the release workflow cannot
+commit there. It lists every published version that is neither a prerelease nor
+deprecated, pins the npm registry, and uses a same-origin relative icon, so the
+branch copy is self-contained. Harness validates the index before use and treats
+its content as third-party content. The jsDelivr mirror is a third-party CDN and
+may lag behind the raw URL; treat the raw URL as the reference.
+
+The branch is a generated artifact: every refresh force-pushes a single commit,
+so it carries no review history — review `scripts/market-index.mjs` and the npm
+registry instead. Maintainers refresh it with the **Market index** workflow
+(manual dispatch or weekly schedule) or a tagged release.
+
+### Configure market-based updates
+
+1. Open **Plugins** in Harness, choose **More** next to **Experimental plugins**,
+   and enable **Custom plugin markets**. A **Discover** tab appears.
+2. In **Discover**, choose **Add index source** and paste one of the URLs above.
+3. The Respire card lists the published versions. When the newest compatible
+   version is newer than the installed one, the card is marked **Update
+   available**. Harness fetches the index when the page loads or is refreshed
+   and caches it for ten minutes; it does not poll in the background.
+4. To install, open the entry's version list and choose **Install**. Third-party
+   entries have no one-click **Update** button: installing a new version removes
+   the old bundle first, then installs the new one, so restart Harness when the
+   manager reports completion. The running process keeps the old module until
+   the restart.
+5. Verify after the restart: the Plugins page or
+   `dsh plugin --profile <profile> list` should show the new version, and the
+   profile's `package.json` should pin it exactly.
+
+To pin a version, run `dsh plugin --profile <profile> add @rsrsai/dsh@<version>
+--save-exact` (the desktop profile requires the bundled CLI). To roll back, run
+the same command with the previous version. If a bad version keeps Harness from
+starting, quit Harness first — the desktop process holds the profile — run the
+command from the bundled CLI, then restart. To withdraw a published version,
+deprecate it with `npm deprecate @rsrsai/dsh@<version>`; the next index refresh
+(the next tagged release, the **Market index** workflow, or
+`node scripts/market-index.mjs` followed by `bash scripts/publish-market-index.sh`)
+drops it from the list.
+
+The plugin never updates itself and never changes the Harness profile on its
+own. Harness plugin management performs installs and updates with a confirmation
+dialog; the `dsh plugin` CLI only does what you run.
+
+### Ask your agent to configure updates
+
+Paste this into a Harness conversation when you want the assistant to configure
+market-based updates and check for a newer version:
+
+```text
+Configure market-based updates for the Respire memory plugin @rsrsai/dsh.
+
+1. Read the Harness version and profile name, and the installed @rsrsai/dsh
+   version from the profile's package.json.
+2. If custom plugin markets are off, enable them: Plugins → More (Experimental
+   plugins) → Custom plugin markets.
+3. Add the plugin market index source
+   https://raw.githubusercontent.com/risense-ai/respire-dsh/market-index/marketplace.json
+   Use https://cdn.jsdelivr.net/gh/risense-ai/respire-dsh@market-index/marketplace.json
+   when raw.githubusercontent.com is unreachable.
+4. Open Discover and confirm the Respire card loads and reports the installed
+   version or Update available. Report the version list you see.
+5. Do not install or change anything yet. Tell me the installed version, the
+   newest compatible version, and the exact steps you would take. After I
+   confirm, install that version (third-party entries remove the old bundle
+   first), tell me to restart Harness, and verify the installed version after
+   the restart.
+```
 
 ## Behavior
 

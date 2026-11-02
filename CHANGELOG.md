@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.12
+
+- Publish a DeepSeek Harness plugin market index (`marketplace.json`, format 1) on the dedicated `market-index` branch, generated from the npm registry by `scripts/market-index.mjs`, so the Discover tab can list and install every published, non-deprecated `@rsrsai/dsh` version. The release workflow refreshes that branch after each tagged publish; a `Market index` workflow provides a manual and weekly refresh, and `npm run market:check` compares the published index with the registry.
+- Skip prereleases and deprecated versions, pin entries to the npmjs registry, sort versions newest-first, and use a same-origin relative icon so the branch copy is self-contained.
+- Document how to enable custom plugin markets, add the index source, verify, install and restart, plus pin, rollback and withdrawal steps, with an agent-facing configuration prompt in both READMEs.
+
 ## 0.1.11
 
 - Exclude credential-like candidate titles before rendering, budgeting or counting them, using the existing credential filter.
