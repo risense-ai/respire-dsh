@@ -1,0 +1,175 @@
+{
+  "format": 1,
+  "title": {
+    "en": "Respire",
+    "zh": "Respire"
+  },
+  "description": {
+    "en": "Respire memory plugins for DeepSeek Harness, published by risense-ai.",
+    "zh": "risense-ai 发布的 DeepSeek Harness 记忆插件。"
+  },
+  "metadata": {
+    "categories": {
+      "memory": {
+        "title": {
+          "en": "Memory",
+          "zh": "记忆"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "@rsrsai/dsh",
+      "title": {
+        "en": "Respire Memory",
+        "zh": "Respire 记忆"
+      },
+      "description": {
+        "en": "Local-first encrypted memory: recalls titles before each answer, stores explicit facts (记： prefix), and checks for unsaved findings before stopping. Requires the rsrs CLI engine.",
+        "zh": "本地优先的端侧加密记忆：回答前自动召回标题、「记：」一前缀即落库、收尾检查未存结论。需要 rsrs CLI 引擎。"
+      },
+      "icon": "./icon.svg",
+      "author": "risense-ai",
+      "homepage": "https://github.com/risense-ai/respire-dsh#readme",
+      "repository": {
+        "url": "https://github.com/risense-ai/respire-dsh.git"
+      },
+      "metadata": {
+        "category": "memory",
+        "keywords": [
+          "memory",
+          "respire",
+          "rsrs",
+          "recall",
+          "记忆",
+          "召回",
+          "落库"
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.1.13",
+          "publishTimestamp": 1793705526,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.12",
+          "publishTimestamp": 1793634380,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.11",
+          "publishTimestamp": 1793623653,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.10",
+          "publishTimestamp": 1793618506,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.9",
+          "publishTimestamp": 1793604709,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.8",
+          "publishTimestamp": 1793604230,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.7",
+          "publishTimestamp": 1793529778,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.4",
+          "publishTimestamp": 1793454259,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.3",
+          "publishTimestamp": 1793423928,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.2",
+          "publishTimestamp": 1792421076,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        },
+        {
+          "version": "0.1.1",
+          "publishTimestamp": 1792420664,
+          "source": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 <0.3.0"
+          }
+        }
+      ]
+    }
+  ]
+}
