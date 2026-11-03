@@ -44,6 +44,7 @@
     "test": "node --test test/*.test.ts",
     "verify:package": "node scripts/check-package.mjs",
     "release:package": "node scripts/release.mjs",
+    "release:notes": "node scripts/release-notes.mjs",
     "market:index": "node scripts/market-index.mjs",
     "market:check": "node scripts/market-index.mjs --check"
   },

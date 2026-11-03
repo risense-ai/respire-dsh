@@ -39,6 +39,9 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME is not contained in main; refusing to publish"
             exit 1
           fi
+      - name: Require committed release notes
+        shell: bash
+        run: test -s "release-notes/${GITHUB_REF_NAME}.md"
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - run: npm run verify:package
@@ -56,7 +59,7 @@ jobs:
         run: |
           args=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then args+=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" ./*.tgz SHA256SUMS --verify-tag --generate-notes "${args[@]}"
+          gh release create "$GITHUB_REF_NAME" ./*.tgz SHA256SUMS --verify-tag --notes-file "release-notes/${GITHUB_REF_NAME}.md" "${args[@]}"
   market-index:
     needs: publish
     runs-on: ubuntu-latest
