@@ -194,9 +194,13 @@ Git 和发布归档均包含编译后的 `lib/`，安装不需要构建脚本。
 | `记：`、`存：`、`记录：`、`记住：`、`remember:` | 不发送写入，留下 pending；主模型本轮读政策和候选，按改＞已授权的并＞挂＞存处理 |
 | `/nomem` 或 `#nomem` 后接空白或输入结束 | 跳过本条自动召回，状态与收尾检查仍启用 |
 | `$skill: name` 前缀 | 从召回查询中去除技能选择器 |
+| goal 轮次（`source.kind === 'goal'`） | `goalRecall: 'first'`（默认）每个 goal revision 召回一次；`'every'` 在首轮及每 `goalRecallEvery` 轮召回；`'off'` 保持旧的人类消息行为。查询优先取 goal 服务的 objective，回退 `<goal_round>` 的 Objective 文本 |
+| goal 轮次结束 | `goalNudgeEvery: N` 在匹配的 goal 轮次最多提醒一次；`0`（默认）不给 goal 轮次加额外模型步骤 |
 | 自然结束 | 每个 agent/回合最多提醒一次；前缀 pending 不会阻止收尾核查；已存内容不得重复写入 |
 
-仅人类消息（`source.kind === 'user'`）触发查存。插件上下文、工具循环和提醒续跑不会触发。
+人类消息（`source.kind === 'user'`）始终触发查存；自动 goal 轮次
+（`source.kind === 'goal'`）仅在 `goalRecall` 启用时触发召回，`<goal_complete>`
+通知不会触发。插件上下文、工具循环和提醒续跑不会触发。
 同一回合重复接受同一消息 ID 时忽略；内容相同的新消息仍会处理。
 下游拒绝和取消会阻止新操作。取消或超时的写入为**未确认**，可能已提交，不自动重试。
 
@@ -226,11 +230,18 @@ Git 和发布归档均包含编译后的 `lib/`，安装不需要构建脚本。
     budgetChars: 1500
     minPromptChars: 2
     storeNudgeEvery: 1
+    goalRecall: first
+    goalRecallEvery: 1
+    goalNudgeEvery: 0
     timeoutMs: 20000
 ```
 
 `rsrsPath` 是可执行文件名或绝对路径，不是 shell 命令。
 `storeNudgeEvery: 0` 关闭提醒；`N` 表示每个运行中的 agent 每 N 个含用户消息的回合检查一次。
+`goalRecall` 取 `off`、`first`（默认）或 `every`：`first` 每个 goal revision 只召回一次，
+按 `goalId:revision` 去重；`every` 在首轮及每 `goalRecallEvery` 轮召回。
+`goalNudgeEvery` 是独立的 goal 轮次收尾节奏，`0`（默认）不加额外模型步骤。
+`/goal` 本身是 UI 命令，不进入模型请求；首个自动 goal 轮次才触发 goal 召回。
 切换 profile 或重载插件会重置临时提醒状态。召回严格限字符数，存储回执保持完整。
 
 ## 隐私与失败处理
