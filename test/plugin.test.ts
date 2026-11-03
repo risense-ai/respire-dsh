@@ -8,6 +8,11 @@ import { containsSecret, recallText, storeText } from '../lib/memory.js'
 
 const hit = { id: 'abcdef01-0000-4000-8000-000000000000', title: '项目使用原生插件', score: 0.82 }
 const human = text => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+const goal = (text, round = 1, revision = 1, goalId = 'goal-1') => createUserMessage({
+  content: [{ type: 'text', text }],
+  source: { kind: 'goal', goalId, revision, round },
+})
+const goalRound = (objective, round = 1, max = 10) => `<goal_round>\nObjective: ${JSON.stringify(objective)}\nRound: ${round}/${max}\n\nContinue working toward the objective in this same session. Treat the current workspace, tool results, and durable session state as authoritative.\n</goal_round>`
 const textOf = decision => decision.messages.flatMap(message => message.content).map(block => block.text ?? '').join('\n')
 
 // answer() returns a receipt document (exit 0), { exitCode, doc } for a non-zero exit, or an Error.
@@ -17,7 +22,7 @@ function replyOf(value) {
   return { error: null, exitCode: 0, doc: value }
 }
 
-function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })) {
+function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] }), goals?: () => { id: string, revision: number, objective: string } | undefined) {
   const ctx = new Context()
   new SystemPrompt(ctx, {})
   const calls = []
@@ -26,6 +31,7 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
   const agent = { steer: message => notices.push(message), session: {} }
   ctx.provide('tools', { guard: check => { guards.push(check); return () => guards.splice(guards.indexOf(check), 1) } })
   ctx.provide('agents', { list: () => [agent] })
+  if (goals) ctx.provide('goals', { get: goals })
   ctx.provide('workingDirectory', { ensure: async () => process.cwd() })
   ctx.provide('subprocess', {
     terminalEnvironment: async () => ({ platform: 'posix' }),
@@ -453,4 +459,93 @@ test('record ids outside the engine whitelist (UUID or long hex) are unknown, ne
 test('credential filter handles private keys and leaves ordinary facts intact', () => {
   assert.equal(containsSecret('-----BEGIN RSA PRIVATE KEY-----'), true)
   assert.equal(containsSecret('项目使用 TypeScript，凭据保存在系统密钥环'), false)
+})
+
+test('goal rounds recall through the goal service and dedupe by goal revision', async () => {
+  let view = { id: 'goal-1', revision: 1, objective: '修复文档门禁' }
+  const h = harness({ goalRecall: 'first' }, () => ({ status: 'ok', details: [hit] }), () => view)
+  const first = await h.step([goal(goalRound('修复文档门禁', 1), 1)])
+  assert.equal(first.startsRequestSeries, true)
+  assert.match(textOf(first), /项目使用原生插件/)
+  assert.equal(first.messages.at(-1).source.summary, 'Memory: 1 found')
+  const recalls = () => h.calls.filter(args => args[1] === 'recall')
+  assert.equal(recalls().length, 1)
+  assert.equal(recalls()[0][2], '修复文档门禁')
+  await h.step([goal(goalRound('修复文档门禁', 2), 2)], 2)
+  assert.equal(recalls().length, 1, 'the same goal revision must not recall twice')
+  view = { id: 'goal-1', revision: 2, objective: '修复文档门禁' }
+  await h.step([goal(goalRound('修复文档门禁', 1), 1, 2)], 3)
+  assert.equal(recalls().length, 2, 'a new revision must recall again')
+  assert.equal(recalls()[1][2], '修复文档门禁')
+  await h.ctx.fiber.dispose()
+})
+
+test('goalRecall off keeps goal rounds out of the engine', async () => {
+  const h = harness({ goalRecall: 'off' }, () => assert.fail('goal rounds must not query the engine'),
+    () => ({ id: 'goal-1', revision: 1, objective: 'x' }))
+  const result = await h.step([goal(goalRound('x', 1), 1)])
+  assert.equal(result.messages.length, 1)
+  assert.equal(h.calls.length, 0)
+  await h.ctx.fiber.dispose()
+})
+
+test('goalRecall every recalls round 1 and every N rounds', async () => {
+  const h = harness({ goalRecall: 'every', goalRecallEvery: 2 }, () => ({ status: 'ok', details: [hit] }),
+    () => ({ id: 'goal-1', revision: 1, objective: '持续目标' }))
+  for (const round of [1, 2, 3, 4]) await h.step([goal(goalRound('持续目标', round), round)], round)
+  const queries = h.calls.filter(args => args[1] === 'recall').map(args => args[2])
+  assert.deepEqual(queries, ['持续目标', '持续目标', '持续目标'])
+  await h.ctx.fiber.dispose()
+})
+
+test('goal rounds parse the retained objective when no goal service is mounted', async () => {
+  const h = harness({ goalRecall: 'first' }, () => ({ status: 'ok', details: [hit] }))
+  const result = await h.step([goal(goalRound('回退目标', 1), 1)])
+  assert.match(textOf(result), /项目使用原生插件/)
+  const recalls = h.calls.filter(args => args[1] === 'recall')
+  assert.equal(recalls.length, 1)
+  assert.equal(recalls[0][2], '回退目标')
+  await h.ctx.fiber.dispose()
+})
+
+test('credential-like goal objectives are skipped without an engine call', async () => {
+  const h = harness({ goalRecall: 'first' }, () => assert.fail('secret objective must not recall'),
+    () => ({ id: 'goal-1', revision: 1, objective: 'api_key=sk-abcdefghijklmnop' }))
+  const result = await h.step([goal(goalRound('api_key=sk-abcdefghijklmnop', 1), 1)])
+  assert.equal(result.messages.at(-1).source.summary, 'Memory: skipped')
+  assert.deepEqual(h.calls.map(args => args[1]), ['status'])
+  await h.ctx.fiber.dispose()
+})
+
+test('goal nudge is opt-in and throttled', async () => {
+  const view = () => ({ id: 'goal-1', revision: 1, objective: '目标' })
+  const off = harness({ goalRecall: 'first', goalNudgeEvery: 0 }, () => ({ status: 'ok', details: [hit] }), view)
+  await off.step([goal(goalRound('目标', 1), 1)])
+  await off.stop(1)
+  assert.equal(off.notices.length, 0)
+  await off.ctx.fiber.dispose()
+
+  const on = harness({ goalRecall: 'first', goalNudgeEvery: 1 }, () => ({ status: 'ok', details: [hit] }), view)
+  await on.step([goal(goalRound('目标', 1), 1)])
+  await on.stop(1)
+  assert.equal(on.notices.length, 1)
+  assert.match(on.notices[0].content[0].text, /goal wrap-up check/)
+  await on.ctx.fiber.dispose()
+
+  const every2 = harness({ goalRecall: 'first', goalNudgeEvery: 2 }, () => ({ status: 'ok', details: [hit] }), view)
+  await every2.step([goal(goalRound('目标', 1), 1)], 1)
+  await every2.stop(1)
+  assert.equal(every2.notices.length, 0)
+  await every2.step([goal(goalRound('目标', 2), 2)], 2)
+  await every2.stop(2)
+  assert.equal(every2.notices.length, 1)
+  await every2.ctx.fiber.dispose()
+})
+
+test('rejected goal steps do not recall', async () => {
+  const h = harness({ goalRecall: 'first' }, () => assert.fail('rejected step must not query the engine'),
+    () => ({ id: 'goal-1', revision: 1, objective: 'x' }))
+  assert.deepEqual(await h.step([goal(goalRound('x', 1), 1)], 1, { kind: 'reject' }), { kind: 'reject' })
+  assert.equal(h.calls.length, 0)
+  await h.ctx.fiber.dispose()
 })

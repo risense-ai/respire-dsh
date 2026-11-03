@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.13
+
+- Recall on automatic goal rounds. `goalRecall` accepts `off`, `first` (default) or `every`: `first` recalls once per `goalId:revision`, `every` recalls on round 1 and every `goalRecallEvery` rounds, and `off` keeps the previous human-only behavior.
+- Resolve the goal query from the goal service's objective when available, falling back to the retained `<goal_round>` Objective text; the surrounding continuation instructions are never used as the query.
+- Add `goalNudgeEvery` (default `0`) as a separate goal-round wrap-up cadence; goal rounds never send a store write.
+- Keep human recall/store behavior, notice summaries, prefix pending and the write guard unchanged; `<goal_complete>` and other plugin contexts stay out of recall.
+- Tests: 32 total, including 7 goal cases (dedupe by revision, `off`/`every`, service and text fallback, credential skip, opt-in nudge, rejected step).
+
 ## 0.1.12
 
 - Publish a DeepSeek Harness plugin market index (`marketplace.json`, format 1) on the dedicated `market-index` branch, generated from the npm registry by `scripts/market-index.mjs`, so the Discover tab can list and install every published, non-deprecated `@rsrsai/dsh` version. The release workflow refreshes that branch after each tagged publish; a `Market index` workflow provides a manual and weekly refresh, and `npm run market:check` compares the published index with the registry.

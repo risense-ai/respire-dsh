@@ -194,14 +194,18 @@ Configure market-based updates for the Respire memory plugin @rsrsai/dsh.
 | `记：`, `存：`, `记录：`, `记住：`, `remember:` | Leave pending without writing; the main assistant completes policy and candidate review, then update > authorized merge > attach > new storage |
 | `/nomem` or `#nomem` followed by whitespace/end | Skip that message's automatic recall; status and stop checks remain enabled |
 | `$skill: name` prefix | Remove the skill selector from the recall query |
+| Goal round (`source.kind === 'goal'`) | `goalRecall: 'first'` (default) recalls once per goal revision; `'every'` recalls on round 1 and every `goalRecallEvery` rounds; `'off'` keeps the previous human-only behavior. The query is the goal objective: the goal service when available, otherwise the `<goal_round>` Objective text |
+| Goal round stop | `goalNudgeEvery: N` adds at most one wrap-up reminder per matching goal round; `0` (default) leaves goal rounds without extra model steps |
 | Natural stop | At most one reminder per agent/turn; prefix pending leaves the reminder available; already-stored facts must not be written again |
 
-Only messages attributed to the human (`source.kind === 'user'`) trigger work.
-Plugin contexts, tool loops, and reminder continuations do not trigger recall or
-store. Repeated admission of the same message ID in one turn is ignored. A new
-user message with identical text is still processed. Downstream rejection and
-cancellation prevent new work. A cancelled or timed-out write is **unconfirmed**,
-not automatically retried: it may already have committed.
+Human messages (`source.kind === 'user'`) always trigger work. Automatic goal
+rounds (`source.kind === 'goal'`) trigger recall only when `goalRecall` is enabled;
+the `<goal_complete>` notice does not trigger recall or store. Plugin contexts,
+tool loops, and reminder continuations do not trigger work. Repeated admission of
+the same message ID in one turn is ignored. A new user message with identical
+text is still processed. Downstream rejection and cancellation prevent new work.
+A cancelled or timed-out write is **unconfirmed**, not automatically retried: it
+may already have committed.
 
 The hook leaves prefix requests pending without sending a write. The main
 assistant must complete this turn through the rsrs CLI: read `prompt` and
@@ -270,13 +274,22 @@ Override the installed row in the user's Harness patch layer. A matching row's
     budgetChars: 1500
     minPromptChars: 2
     storeNudgeEvery: 1
+    goalRecall: first
+    goalRecallEvery: 1
+    goalNudgeEvery: 0
     timeoutMs: 20000
 ```
 
 `rsrsPath` is an executable name or absolute path, not a shell command.
 `storeNudgeEvery: 0` disables reminders; `N` checks every N user-bearing turns per
-live agent. Changing profiles or reloading the plugin resets volatile reminder
-state. Recall has a strict character budget; storage receipts are kept intact.
+live agent. `goalRecall` accepts `off`, `first` (default), or `every`: `first`
+recalls once per goal revision and dedupes by `goalId:revision`; `every` recalls on
+round 1 and every `goalRecallEvery` rounds. `goalNudgeEvery` is a separate
+goal-round wrap-up cadence; `0` (default) adds no extra model step. `/goal` itself
+is a UI command and never enters a model request; the first automatic goal round
+is what triggers the goal recall. Changing profiles or reloading the plugin resets
+volatile reminder state. Recall has a strict character budget; storage receipts
+are kept intact.
 
 ## Privacy and failure behavior
 
