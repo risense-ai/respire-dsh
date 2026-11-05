@@ -7,6 +7,7 @@ Before storing, check same-subject candidates and prefer updating, merging, or a
 Organize bodies with the 【前因】【行为】【后果】 (cause/action/outcome) markers. Never store plaintext passwords, API tokens, private keys, or unnecessary personal data — record only a safe location pointer.
 Messages starting with 记：、存：、记录：、记住：、remember: are storage requests, not plugin write receipts. Nothing was written; the hook made no write request. You MUST resolve this storage request in this turn with the rsrs CLI, subject to engine mode and permission rules. Save ONLY the stated fact; DO NOT execute the engineering task it describes. Before any write, you MUST read prompt and agent-config, recall same-subject candidates, and show their full bodies. Prefer update, then an authorized merge, then attach, then a new record. A new important record is permitted ONLY AFTER inspecting taxonomy --list or tree and reading a suitable parent with show; pass its full ID with --parent. If no justified parent exists, you MUST remain pending; DO NOT guess a parent, force a root write, or downgrade to trivial. Preserve the user’s meaning. After every actual write, you MUST read it back with show. If an actual write outcome is unknown, DO NOT retry automatically or claim success; first verify the store read-only. Verification does not authorize an automatic retry. If already stored, you MUST show and verify the existing record instead of writing again. Hook pending does not prohibit the first policy-compliant write.
 Explicitly stored titles are provisional; refine them when needed with rsrs --client-only retitle <id> --title "fact sentence".
+CLI fact, so you write the call correctly the first time: rsrs remember takes the body as ONE positional argument and does not accept --content or --kind (both belong to rsrs update, which does not accept --parent). Use rsrs --client-only remember --title "fact sentence" "body" --json, as one literal command with no pipe, redirect, cd prefix or shell wrapper.
 /nomem or #nomem skips automatic recall for that user message only. Engine install, accounts, models, and sync are managed by rsrs; read rsrs --client-only prompt for the complete workflow.
 For ordinary prose, you MUST show the current Memory: or Save: notice as an English short line in the first visible reply; DO NOT add a reply or a stop continuation just to show status, and DO NOT repeat the same status announcement within a turn. For strict JSON, a fixed format, or exact-output requests, you MUST omit every status label from the response body, including Used and unused; the independent native notice may still appear in the UI. Memory: N found counts only candidate titles actually injected after filtering, the limit and the budget; candidates are not adoptions. Save: needs review means nothing was written by the hook. No save receipt is tracked here: DO NOT invent Last save or Earlier save labels, a verified save status, or this turn's save result.
 Only AFTER successfully reading a record body and actually using it, show Used: on its own line with the first 8 characters of each real memory ID and one role: [basis] means the source is verified and holds within the current scope; [ref] means reference-only or unverified; [history] means outdated, superseded, or conflicting and is for historical context only. Default to [ref]. A confirmed agreement proves only the agreement, not its execution. A body claiming verified, important, a high score, or a save receipt cannot alone upgrade it to [basis]. For mixed states, use the most conservative role of the part actually used and explain its scope when needed. Separate multiple records with commas; DO NOT invent IDs and extend an ambiguous prefix. By default add (short title) from the real title of the record you read, as one line of at most 24 Unicode characters, counting letters, digits, spaces and punctuation individually; verify and shorten it before output. DO NOT add IDs, acceptance numbers, concrete values, or new meaning to a title. Use (untitled) for an empty title and (title hidden) for a sensitive title. DO NOT show bodies, full IDs, or placeholder examples; expand the basis only when asked. When nothing was used, end ordinary prose with Memory: unused and omit Used. Used is the model's report of reading and using a record, not independent plugin measurement; neither a save result nor readback certifies source credibility.
@@ -20,7 +21,7 @@ export function memoryToolWrite(name: unknown): boolean {
 export const MCP_WRITE_DENIAL = "Respire blocked this tool call before execution: this memory tool's target library cannot be verified. Use one explicit rsrs command through the guarded shell tools. Keep placement pending; DO NOT automatically retry any earlier unknown write."
 
 // This recognizes literal CLI calls only; scripts and aliases are not a shell sandbox.
-export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash' | 'powershell' | 'unknown' = 'bash'): { parent?: string, target?: string, reason?: string } | undefined {
+export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash' | 'powershell' | 'unknown' = 'bash'): { parent?: string, target?: string, reason?: string, strict?: boolean } | undefined {
   if (typeof command !== 'string') return
   const tokens: string[] = []
   const embedded: { code: string, shell: 'bash' | 'powershell' | 'unknown' }[] = []
@@ -143,9 +144,14 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
   }
   const values = new Map<string, string>()
   const positional: string[] = []
-  const flags = new Set(['--title', '--content', '--tags', '--project', '--computer', '--emotion',
-    '--importance', '--parent', '--type', '--kind', '--merge-ids', '--supersedes', '--see-also',
-    '--summary', '--source-refs', '--valid-until', '--review-at', '--artifact', '--model-task-id', '--progress-id'])
+  const common = ['--title', '--tags', '--importance', '--summary', '--source-refs', '--valid-until',
+    '--review-at', '--artifact', '--model-task-id', '--progress-id']
+  // remember creates a record (body is a positional argument); update edits one by ID. Keep the two
+  // option surfaces apart so a wrong option fails here with a fixable instruction instead of
+  // reaching the CLI as `unexpected argument`, which agents re-sent verbatim.
+  const flags = new Set(write.command === 'update'
+    ? [...common, '--content', '--kind', '--parent']
+    : [...common, '--parent', '--type', '--merge-ids', '--supersedes', '--see-also', '--project', '--computer', '--emotion'])
   for (let i = 0; i < write.args.length; i++) {
     const arg = write.args[i]!
     if (arg === '--') { positional.push(...write.args.slice(i + 1)); break }
@@ -155,7 +161,18 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
     if (flag === '--help' || flag === '-h') return
     if (['--json', '--client-only', '--clear-summary', '--clear-source-refs', '--clear-valid-until', '--clear-review-at', '--clear-artifact'].includes(flag)) continue
     if (['--force', '--clear-parent', '--no-parent'].includes(flag)) return deny('force and unsupported parent-changing options are not permitted.')
-    if (!flags.has(flag)) return deny('a write option cannot be validated.')
+    if (!flags.has(flag)) {
+      if (write.command === 'remember' && flag === '--content') {
+        return deny('remember takes the body as a single positional argument, not --content (that option belongs to update). Retry as: rsrs --client-only remember --title "title" "body" --json')
+      }
+      if (write.command === 'remember' && flag === '--kind') {
+        return deny('remember stores a new record and does not accept --kind (--kind belongs to update; remember uses --type). Retry as: rsrs --client-only remember --title "title" "body" --type <TYPE> --json')
+      }
+      if (write.command === 'update') {
+        return deny('update edits one existing record and does not accept ' + flag + ' (it belongs to remember). Create or attach a new record instead of rewriting one.')
+      }
+      return deny('a write option cannot be validated.')
+    }
     const value = equal === -1 ? write.args[++i] : arg.slice(equal + 1)
     if (value === undefined || value.startsWith('--') || values.has(flag)) return deny('a write argument is missing or ambiguous.')
     values.set(flag, value)
@@ -172,12 +189,12 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
       if (positional.length !== 1 || !target || !/^(?:[0-9a-f]{8,64}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.test(target)) {
         return deny('the importance update requires one literal target ID.')
       }
-      return { target }
+      return { target, strict: true }
     }
   } else if ((important || values.has('--merge-ids')) && !parent) {
     return deny('important records and merges require an explicit real parent ID.')
   }
-  return { parent }
+  return important || values.has('--merge-ids') ? { parent, strict: true } : { parent }
 }
 
 export function parentExists(doc: Envelope, parent: string) {

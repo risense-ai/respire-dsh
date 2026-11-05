@@ -22,7 +22,7 @@ function replyOf(value) {
   return { error: null, exitCode: 0, doc: value }
 }
 
-function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] }), goals?: () => { id: string, revision: number, objective: string } | undefined) {
+function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] }), goals?: () => { id: string, revision: number, objective: string } | undefined, statusAnswer = () => ({ status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } })) {
   const ctx = new Context()
   new SystemPrompt(ctx, {})
   const calls = []
@@ -39,9 +39,7 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
     spawn: spec => {
       const args = spec.argv.slice(1)
       calls.push(args)
-      const reply = replyOf(args[1] === 'status'
-        ? { status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } }
-        : answer(args))
+      const reply = replyOf(args[1] === 'status' ? statusAnswer() : answer(args))
       return {
         done: reply.error ? Promise.reject(reply.error) : Promise.resolve({ exitCode: reply.exitCode, signal: null }),
         collected: { stdout: { readFrom: () => ({ text: JSON.stringify(reply.doc), lossy: false }) } },
@@ -179,13 +177,18 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   }
   attached = parent; live = false
   const before = promotion.calls.length, bodies = promotion.dispatched.length
-  assert.equal((await promotion.tool('terminal_send', `rsrs update ${target} --importance important`)).kind, 'deny')
+  const unanswerable = await promotion.tool('terminal_send', `rsrs update ${target} --importance important`)
+  assert.equal(unanswerable.kind, 'deny', 'an unanswerable parent keeps an important update pending')
+  assert.match(unanswerable.reason, /nothing was dispatched/)
   assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target, parent])
   assert.equal(promotion.dispatched.length, bodies)
   for (const status of ['fail', 'skip']) {
     targetStatus = status
     const before = promotion.calls.length, bodies = promotion.dispatched.length
-    assert.equal((await promotion.tool('bash', `rsrs update ${target} --importance important`)).kind, 'deny')
+    const denied = await promotion.tool('bash', `rsrs update ${target} --importance important`)
+    assert.equal(denied.kind, 'deny', 'a strict write is not dispatched while its target is unverified')
+    assert.match(denied.reason, /nothing was dispatched/)
+    assert.match(denied.reason, /Re-run the same single command/)
     assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
     assert.equal(promotion.dispatched.length, bodies)
   }
@@ -193,11 +196,86 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.equal((await absent.tool('bash', `rsrs update ${parent} --parent ${parent}`)).kind, 'deny')
   assert.equal(absent.dispatched.length, 0)
   const failed = harness({}, () => new Error('private engine diagnostics'))
-  assert.equal((await failed.tool('pwsh', `& 'C:\\tools\\rsrs.exe' remember fact --importance important --parent ${parent}`)).kind, 'deny')
+  const failedDecision = await failed.tool('pwsh', `& 'C:\\tools\\rsrs.exe' remember fact --importance important --parent ${parent}`)
+  assert.equal(failedDecision.kind, 'deny', 'a strict write is never dispatched while its parent is unverified')
+  assert.match(failedDecision.reason, /nothing was dispatched/)
+  assert.match(failedDecision.reason, /Re-run the same single command/)
   assert.equal(failed.dispatched.length, 0)
+  const mergeUnavailable = await failed.tool('bash', `rsrs --client-only remember --title t "body" --merge-ids ${parent} --parent ${parent}`)
+  assert.equal(mergeUnavailable.kind, 'deny', 'merge counts as strict even without --importance')
+  assert.match(mergeUnavailable.reason, /nothing was dispatched/)
+  const ordinary = harness({}, () => new Error('private engine diagnostics'))
+  const ordinaryDecision = await ordinary.tool('bash', `rsrs --client-only remember --title t "body" --parent ${parent}`)
+  assert.equal(ordinaryDecision.kind, 'allow', 'a non-strict write is dispatched with a notice')
+  assert.equal(ordinary.dispatched.length, 1)
+  assert.match(ordinary.notices.at(-1).content[0].text, /parent check skipped/)
+  assert.doesNotMatch(ordinary.notices.at(-1).content[0].text, /performs its own parent check/)
+  const missingParent = harness({}, args => ({ status: 'ok', summary: { id: 'fedcba98-0000-4000-8000-000000000000' }, details: { entry: { id: 'fedcba98-0000-4000-8000-000000000000', content: 'other record' } } }))
+  for (const command of [`rsrs --client-only remember --title t "body" --parent ${parent}`,
+    `rsrs --client-only remember --title t "body" --parent ${parent} --importance important`]) {
+    const missingDecision = await missingParent.tool('bash', command)
+    assert.equal(missingDecision.kind, 'deny', 'an ok receipt that does not match the parent stays denied')
+    assert.match(missingDecision.reason, /parent record does not exist/)
+  }
+  assert.equal(missingParent.dispatched.length, 0)
+  const failingSteer = harness({}, () => new Error('private engine diagnostics'))
+  failingSteer.agent.steer = () => { throw new Error('steer unavailable') }
+  const steerFailed = await failingSteer.tool('bash', `rsrs --client-only remember --title t "body" --parent ${parent}`)
+  assert.equal(steerFailed.kind, 'allow', 'an undeliverable notice must not turn a dispatched write into a failure')
+  assert.equal(failingSteer.dispatched.length, 1)
+  const noAgent = harness({}, () => new Error('private engine diagnostics'))
+  const noAgentSignal = new AbortController().signal
+  const noAgentDecision = await noAgent.ctx.waterfall('tools/pre-execute',
+    { name: 'bash', arguments: { command: `rsrs --client-only remember --title t "body" --parent ${parent}` }, signal: noAgentSignal },
+    async () => ({ kind: 'allow' }))
+  assert.equal(noAgentDecision.kind, 'deny', 'without an agent the skip cannot be reported, so it stays denied')
+  assert.match(noAgentDecision.reason, /cannot be told about it/)
+  assert.doesNotMatch(noAgentDecision.reason, /the parent record does not exist/)
   const off = harness({ enabled: false }, () => assert.fail('disabled plugin must not query the engine'))
   assert.equal((await off.tool('bash', unsafe[0])).kind, 'allow')
-  for (const fixture of [gate, promotion, absent, failed, off]) await fixture.ctx.fiber.dispose()
+  for (const fixture of [gate, promotion, absent, failed, ordinary, missingParent, failingSteer, off]) await fixture.ctx.fiber.dispose()
+  await h.ctx.fiber.dispose()
+})
+
+test('operation-specific write options fail with fixable instructions', async () => {
+  const h = harness()
+  const content = await h.tool('bash', 'rsrs --client-only remember --title t --content "body text"')
+  assert.equal(content.kind, 'deny')
+  assert.match(content.reason, /remember takes the body as a single positional argument/)
+  assert.match(content.reason, /rsrs --client-only remember --title "title" "body" --json/)
+  const kind = await h.tool('bash', 'rsrs --client-only remember --title t "body text" --kind context')
+  assert.equal(kind.kind, 'deny')
+  assert.match(kind.reason, /remember uses --type/)
+  const target = 'abcdef01-0000-4000-8000-000000000000'
+  const type = await h.tool('bash', `rsrs --client-only update ${target} --type context`)
+  assert.equal(type.kind, 'deny')
+  assert.match(type.reason, /update edits one existing record and does not accept --type/)
+  const parent = await h.tool('bash', `rsrs --client-only update ${target} --parent ${target}`)
+  assert.equal(parent.kind, 'deny')
+  assert.match(parent.reason, /update does not accept parent changes/)
+  const force = await h.tool('bash', `rsrs --client-only remember --title t "body text" --parent ${target} --importance important --force`)
+  assert.equal(force.kind, 'deny')
+  assert.match(force.reason, /force and unsupported parent-changing options are not permitted/)
+  assert.equal(h.dispatched.length, 0, 'a wrong option never reaches the shell')
+  const live = harness({}, args => ({ status: 'ok', summary: { id: args[2] }, details: { entry: { id: args[2], content: 'Existing record' } } }))
+  assert.equal((await live.tool('bash', 'rsrs --client-only remember --title t "body text" --importance important --parent ' + target)).kind, 'allow')
+  assert.equal((await live.tool('bash', 'rsrs --client-only update ' + target + ' --title t --content "body text"')).kind, 'allow')
+  assert.equal(live.dispatched.length, 2)
+  await live.ctx.fiber.dispose()
+  await h.ctx.fiber.dispose()
+})
+
+test('a failed status check retries on the next turn instead of sticking', async () => {
+  let statusCalls = 0
+  const h = harness({}, () => ({ status: 'ok', details: [] }), undefined, () => {
+    statusCalls++
+    return statusCalls === 1 ? new Error('runtime down') : { status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } }
+  })
+  const first = await h.step([human('第一轮')])
+  assert.match(textOf(first), /Engine or runtime unavailable/)
+  const second = await h.step([human('第二轮')], 2)
+  assert.doesNotMatch(textOf(second), /Engine or runtime unavailable/)
+  assert.equal(statusCalls, 2, 'status is retried instead of staying failed forever')
   await h.ctx.fiber.dispose()
 })
 
