@@ -123,7 +123,7 @@ function goalQuery(ctx: Context, agent: Agent, source: GoalMessageSource, text: 
   return goalObjectiveText(text) ?? (text || undefined)
 }
 
-function shouldRecallGoal(state: AgentState, source: GoalMessageSource, goalRecall: GoalRecall, every: number): boolean {
+export function shouldRecallGoal(state: AgentState, source: GoalMessageSource, goalRecall: GoalRecall, every: number): boolean {
   if (goalRecall === 'off') return false
   if (goalRecall === 'first') return state.goalKey !== goalKeyOf(source)
   return source.round === 1 || source.round % every === 0
@@ -137,7 +137,9 @@ interface ToolsContext {
   on(event: 'tools/pre-execute', listener: (exec: MemoryExecution, next: () => Promise<ToolDecision>) => Promise<ToolDecision>): unknown
 }
 
-export function apply(ctx: Context, options: Config = {}): void {
+// Assembles plugin options over the shipped defaults and validates every bound.
+// Exported for offline tests; apply() uses this exact path, so testing it tests apply's expansion.
+export function resolveConfig(options: Config = {}) {
   const config = { enabled: true, rsrsPath: 'rsrs', recallLimit: 5, recallThreshold: 0,
     budgetChars: 1500, minPromptChars: 2, storeNudgeEvery: 1, goalRecall: 'first' as GoalRecall,
     goalRecallEvery: 1, goalNudgeEvery: 0, timeoutMs: 20000, ...options }
@@ -155,6 +157,11 @@ export function apply(ctx: Context, options: Config = {}): void {
     throw new TypeError('respire: invalid recallThreshold')
   }
   if (!config.rsrsPath.trim()) throw new TypeError('respire: rsrsPath must not be empty')
+  return config
+}
+
+export function apply(ctx: Context, options: Config = {}): void {
+  const config = resolveConfig(options)
   if (!config.enabled) return
 
   const lifetime = new AbortController()

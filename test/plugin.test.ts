@@ -576,6 +576,27 @@ test('goalRecall every recalls round 1 and every N rounds', async () => {
   await h.ctx.fiber.dispose()
 })
 
+test('cordis respire-memory row drives apply: every gate over rounds 1-3, defaults stay first', async () => {
+  // The exact config from the device cordis.patch.yml respire-memory row (60000 / every / 2)
+  // passed through apply(); timeoutMs itself is not observable offline, so its value is
+  // asserted via resolveConfig in config.test.ts — apply() calls that same path.
+  const every = harness({ timeoutMs: 60000, goalRecall: 'every', goalRecallEvery: 2 },
+    () => ({ status: 'ok', details: [hit] }), () => ({ id: 'goal-1', revision: 1, objective: '持续目标' }))
+  for (const round of [1, 2, 3]) await every.step([goal(goalRound('持续目标', round), round)], round)
+  const everyQueries = every.calls.filter(args => args[1] === 'recall').map(args => args[2])
+  assert.deepEqual(everyQueries, ['持续目标', '持续目标'],
+    'every/2: round 1 recalls, round 2 recalls (2 % 2 === 0), round 3 skips')
+  await every.ctx.fiber.dispose()
+
+  const defaults = harness({}, () => ({ status: 'ok', details: [hit] }),
+    () => ({ id: 'goal-1', revision: 1, objective: '持续目标' }))
+  for (const round of [1, 2, 3]) await defaults.step([goal(goalRound('持续目标', round), round)], round)
+  const defaultQueries = defaults.calls.filter(args => args[1] === 'recall').map(args => args[2])
+  assert.deepEqual(defaultQueries, ['持续目标'],
+    'default goalRecall first: one recall per goal revision, rounds 2-3 do not re-recall')
+  await defaults.ctx.fiber.dispose()
+})
+
 test('goal rounds parse the retained objective when no goal service is mounted', async () => {
   const h = harness({ goalRecall: 'first' }, () => ({ status: 'ok', details: [hit] }))
   const result = await h.step([goal(goalRound('回退目标', 1), 1)])
