@@ -76,6 +76,7 @@ interface AgentState {
   ready: boolean
   rounds: number
   goalKey?: string
+  statusRetryRound?: number
   turn?: TurnState
 }
 
@@ -122,7 +123,7 @@ function goalQuery(ctx: Context, agent: Agent, source: GoalMessageSource, text: 
   return goalObjectiveText(text) ?? (text || undefined)
 }
 
-function shouldRecallGoal(state: AgentState, source: GoalMessageSource, goalRecall: GoalRecall, every: number): boolean {
+export function shouldRecallGoal(state: AgentState, source: GoalMessageSource, goalRecall: GoalRecall, every: number): boolean {
   if (goalRecall === 'off') return false
   if (goalRecall === 'first') return state.goalKey !== goalKeyOf(source)
   return source.round === 1 || source.round % every === 0
@@ -136,7 +137,9 @@ interface ToolsContext {
   on(event: 'tools/pre-execute', listener: (exec: MemoryExecution, next: () => Promise<ToolDecision>) => Promise<ToolDecision>): unknown
 }
 
-export function apply(ctx: Context, options: Config = {}): void {
+// Assembles plugin options over the shipped defaults and validates every bound.
+// Exported for offline tests; apply() uses this exact path, so testing it tests apply's expansion.
+export function resolveConfig(options: Config = {}) {
   const config = { enabled: true, rsrsPath: 'rsrs', recallLimit: 5, recallThreshold: 0,
     budgetChars: 1500, minPromptChars: 2, storeNudgeEvery: 1, goalRecall: 'first' as GoalRecall,
     goalRecallEvery: 1, goalNudgeEvery: 0, timeoutMs: 20000, ...options }
@@ -154,6 +157,11 @@ export function apply(ctx: Context, options: Config = {}): void {
     throw new TypeError('respire: invalid recallThreshold')
   }
   if (!config.rsrsPath.trim()) throw new TypeError('respire: rsrsPath must not be empty')
+  return config
+}
+
+export function apply(ctx: Context, options: Config = {}): void {
+  const config = resolveConfig(options)
   if (!config.enabled) return
 
   const lifetime = new AbortController()
@@ -174,7 +182,10 @@ export function apply(ctx: Context, options: Config = {}): void {
     ? record(exec.arguments)?.[exec.name === 'terminal_send' ? 'text' : 'command'] : undefined
   const shellOf = (exec: MemoryExecution) => exec.name === 'bash' ? 'bash' : exec.name === 'pwsh' ? 'powershell' : 'unknown'
   const checks = new WeakMap<MemoryExecution, { command: unknown, reason?: string }>()
-  const unverified = 'Respire blocked this tool call before execution: parent validation did not complete. Keep placement pending; for important updates, attach the target first if it has no valid parent. DO NOT guess, force, downgrade, or automatically retry an earlier unknown write.'
+  const unverified = '【respire 拦截】执行前阻止该工具调用：父记录不存在。保持挂起（pending）；重要更新若无有效父级，先 attach 目标再试。不许猜测、强写、降级，也不许自动重试此前结果未知的写入。'
+  const strictUnavailable = '【respire 拦截】执行前阻止该工具调用：父级校验未完成（引擎或运行时无应答）。该写入需要真实父级（important/合并），而引擎会在没有父级的情况下写入，因此本次未下发。待 rsrs --client-only status 能应答后，原样重跑同一条命令；不要更换父级。'
+  const noAgentUnavailable = '【respire 拦截】执行前阻止该工具调用：父级校验无法完成，且本次调用无处告知。未下发任何写入；待引擎应答后原样重跑同一条命令，不要更换父级。'
+  const validationSkipped = '【respire · 父级校验已跳过】当前父级校验不可用（引擎或运行时无应答），写入照常下发；引擎会尽量存储并报告它无法解析的父级。事后核验落位；不许猜测或强加父级。'
   toolHost.tools.guard(exec => {
     if (memoryToolWrite(exec.name)) return MCP_WRITE_DENIAL
     if (!memoryWrite(commandOf(exec), config.rsrsPath, shellOf(exec))) return
@@ -189,6 +200,16 @@ export function apply(ctx: Context, options: Config = {}): void {
     const write = memoryWrite(command, config.rsrsPath, shellOf(exec))
     if (!write) return decision
     let reason = write.reason
+    let skipped = false
+    // A read that cannot answer proves nothing about the parent. Never dispatch a write the engine
+    // would store WITHOUT that parent (important/merge): measured behaviour is status=warn plus an
+    // orphan record, which is worse than a denial the caller can retry. Ordinary writes proceed and
+    // are told why the placement was not verified.
+    const unavailable = (): void => {
+      if (!exec.agent) reason = noAgentUnavailable
+      else if (write.strict) reason = strictUnavailable
+      else skipped = true
+    }
     if (!reason && (write.parent || write.target)) {
       const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(Math.min(config.timeoutMs, 5000))])
       try {
@@ -200,15 +221,28 @@ export function apply(ctx: Context, options: Config = {}): void {
         let parent = write.parent
         if (write.target) {
           const target = await read(write.target)
-          if (!parentExists(target, write.target)) reason = unverified
+          // Only a real ok envelope is authoritative. A non-ok envelope is "could not answer",
+          // exactly like a thrown read: it must not be read as "the record does not exist".
+          if (target.status !== 'ok') unavailable()
+          else if (!parentExists(target, write.target)) reason = unverified
           else {
             parent = currentParent(target, write.target)
-            if (!parent) reason = 'Respire blocked this tool call before execution: attach this record under a real parent before requesting important. Keep it pending; DO NOT automatically retry any earlier unknown write.'
+            if (!parent) reason = '【respire 拦截】执行前阻止该工具调用：申请 important 前须先把该记录挂到真实父级下。保持挂起；不许自动重试此前结果未知的写入。'
           }
         }
-        if (!reason && parent && !parentExists(await read(parent), parent)) reason = unverified
+        if (!skipped && !reason && parent) {
+          const doc = await read(parent)
+          if (doc.status !== 'ok') unavailable()
+          else if (!parentExists(doc, parent)) reason = unverified
+        }
         signal.throwIfAborted()
-      } catch { reason = unverified }
+      } catch { unavailable() }
+    }
+    if (skipped && exec.agent) {
+      try { exec.agent.steer(contextMessage(validationSkipped)) } catch (error) {
+        // A notice that cannot be delivered must never turn a dispatched write into a failure.
+        ctx.logger.warn(`respire: steer ${error instanceof Error ? error.message : 'failed'}`)
+      }
     }
     checks.set(exec, { command, reason })
     return reason ? { kind: 'deny', reason } : decision
@@ -237,18 +271,23 @@ export function apply(ctx: Context, options: Config = {}): void {
 
     const ensureStatus = async (): Promise<void> => {
       if (state.checked) return
+      // A single failed status check used to stick for the whole agent lifetime, which silenced
+      // every wrap-up store reminder after one transient runtime outage. Retry on the next turn.
+      if (state.statusRetryRound !== undefined && state.rounds < state.statusRetryRound) return
       state.checked = true
       try {
         const status = await call(['status'])
         state.ready = status.status === 'ok'
         const summary = record(status.summary)
-        if (record(summary?.session)?.has_session === false) additions.push(contextMessage('【respire · status】Not signed in. Configure the account and sync per the rsrs status output.'))
-        if (typeof summary?.local_alive === 'number' && summary.local_alive < 10) additions.push(contextMessage('【respire · status】The store has few records; empty recall may be normal. Explicitly save confirmed project agreements; the semantic model is configured by rsrs as needed.'))
-        if (summary?.unlocked === false) additions.push(contextMessage('【respire · status】The store is locked. Ask the user to unlock it via the rsrs interactive flow; never collect passwords.'))
+        if (record(summary?.session)?.has_session === false) additions.push(contextMessage('【respire · 状态】未登录。按 rsrs status 输出配置账号并同步。'))
+        if (typeof summary?.local_alive === 'number' && summary.local_alive < 10) additions.push(contextMessage('【respire · 状态】库存记录很少；召回为空可能属正常。请显式存入已确认的项目约定；语义模型由 rsrs 按需配置。'))
+        if (summary?.unlocked === false) additions.push(contextMessage('【respire · 状态】存储库已锁定。请用户通过 rsrs 交互流程解锁；绝不收集密码。'))
       } catch (error) {
+        state.checked = false
+        state.statusRetryRound = state.rounds + 1
         if (combined.aborted) return
         ctx.logger.warn(`respire: status ${error instanceof RsrsError ? error.code : 'failed'}`)
-        additions.push(contextMessage('【respire · status】Engine or runtime unavailable. Verify rsrs --version and rsrs --client-only status; if the engine is missing, install rsrs-cli. The current task continues.'))
+        additions.push(contextMessage('【respire · 状态】引擎或运行时不可用。请核验 rsrs --version 与 rsrs --client-only status；缺引擎则安装 rsrs-cli。当前任务继续。'))
       }
     }
 
@@ -256,16 +295,16 @@ export function apply(ctx: Context, options: Config = {}): void {
       try {
         const doc = await call(['recall', query, '--limit', String(config.recallLimit), '--titles'])
         const { text, count } = recallText(doc, config.recallLimit, config.recallThreshold,
-          config.budgetChars - `Memory: ${config.recallLimit} found\n`.length)
+          config.budgetChars - `记忆：命中 ${config.recallLimit} 条\n`.length)
         state.ready = true
         const summary = doc.status === 'skip' && record(doc.summary)?.count !== 0
-          ? 'Memory: skipped' : count ? `Memory: ${count} found` : 'Memory: no match'
+          ? '记忆：已跳过' : count ? `记忆：命中 ${count} 条` : '记忆：无命中'
         return { text, summary }
       } catch (error) {
         if (combined.aborted) return
         const code = error instanceof RsrsError ? error.code : 'invalid-output'
         ctx.logger.warn(`respire: recall ${code}`)
-        return { text: `【respire · recall unavailable】${code}. No memory was obtained; continue with the current materials.`, summary: 'Memory: unavailable' }
+        return { text: `【respire · 召回失败】${code}。没有取到记忆；请基于现有材料继续。`, summary: '记忆：不可用' }
       }
     }
 
@@ -286,7 +325,7 @@ export function apply(ctx: Context, options: Config = {}): void {
         const query = goalQuery(ctx, agent, source, prompt)
         if (!query) continue
         if (containsSecret(query)) {
-          additions.push(contextMessage('【respire · skipped】The goal objective looks like it contains a credential and was not sent to the memory engine. Provide only the fact with the secret removed, or a safe location pointer.', 'Memory: skipped'))
+          additions.push(contextMessage('【respire · 已跳过】目标正文疑似含凭据，未发送给记忆引擎。请只提供去掉密钥后的事实，或一个安全的位置指针。', '记忆：已跳过'))
           continue
         }
         const recalled = await recall(query)
@@ -295,26 +334,26 @@ export function apply(ctx: Context, options: Config = {}): void {
       }
       current.hadUser = true
       if (SKIP_PREFIX.test(prompt)) {
-        additions.push(contextMessage('Automatic recall was skipped for this message.', 'Memory: skipped'))
+        additions.push(contextMessage('本条消息已跳过自动召回。', '记忆：已跳过'))
         continue
       }
       const store = STORE_PREFIX.exec(prompt)
       if (containsSecret(prompt)) {
-        additions.push(contextMessage('【respire · skipped】The input looks like it contains a credential and was not sent to the memory engine. Provide only the fact with the secret removed, or a safe location pointer.', store ? 'Save: needs review' : 'Memory: skipped'))
+        additions.push(contextMessage('【respire · 已跳过】输入疑似含凭据，未发送给记忆引擎。请只提供去掉密钥后的事实，或一个安全的位置指针。', store ? '存档：待复核' : '记忆：已跳过'))
         continue
       }
       if (store) {
         const content = prompt.slice(store[0].length).trim()
         if (!content) {
-          additions.push(contextMessage('【respire · not stored】The content is empty; ask the user for the fact to save.', 'Save: needs review'))
+          additions.push(contextMessage('【respire · 未存档】内容为空；请向用户询问要保存的事实。', '存档：待复核'))
           continue
         }
         state.ready = true
-        additions.push(contextMessage('【respire · store pending】Nothing was written; the hook made no write request. You MUST resolve this storage request in this turn with the rsrs CLI, subject to engine mode and permission rules. Save ONLY the stated fact; DO NOT execute the engineering task it describes. Before any write, you MUST read prompt and agent-config, recall same-subject candidates, and show their full bodies. Prefer update, then an authorized merge, then attach, then a new record. A new important record is permitted ONLY AFTER inspecting taxonomy --list or tree and reading a suitable parent with show; pass its full ID with --parent. If no justified parent exists, you MUST remain pending; DO NOT guess a parent, force a root write, or downgrade to trivial. Preserve the user’s meaning. After every actual write, you MUST read it back with show. If an actual write outcome is unknown, DO NOT retry automatically or claim success; first verify the store read-only. Verification does not authorize an automatic retry. If already stored, you MUST show and verify the existing record instead of writing again.', 'Save: needs review'))
+        additions.push(contextMessage('【respire · 存档待处理】什么都没写；钩子没有发出任何写请求。你必须在本轮用 rsrs CLI 完成这条存储，受引擎模式与权限规则约束。只存陈述的事实本身，不执行它描述的工程任务。任何写入前，你必须读 prompt 与 agent-config、召回同题候选并 show 其全文；优先改，其次经授权的并，再挂，最后才新存。重要新记录只有在 taxonomy --list 或 tree 查过、且 show 读过合适父级之后才允许，父级完整 ID 作 --parent 传入；没有正当父级就必须保持 pending，不许猜父级、强开根级或降级为 trivial。保留用户原意。每次实际写入后必须用 show 读回。实际写入结果未知时不许自动重试或谎称成功，先对存储库只读核验——核验不构成自动重试的授权。已存过的必须 show 并核验既有记录，而不是再写一次。', '存档：待复核'))
         continue
       }
       if (prompt.length < config.minPromptChars) {
-        additions.push(contextMessage('Automatic recall was skipped for this short message.', 'Memory: skipped'))
+        additions.push(contextMessage('本条短消息已跳过自动召回。', '记忆：已跳过'))
         continue
       }
       const query = prompt.replace(SKILL_PREFIX, '').trim() || prompt
@@ -333,12 +372,12 @@ export function apply(ctx: Context, options: Config = {}): void {
     if (current.hadGoal && config.goalNudgeEvery > 0
       && current.goalRound % config.goalNudgeEvery === 0 && !current.goalNudged) {
       current.goalNudged = true
-      agent.steer(contextMessage('【respire · goal wrap-up check】This goal round may have produced new facts, decisions, agreements, or lessons. Check same-subject candidates, read them, then update or store with a chosen parent; use a fact-sentence title. If already stored or nothing needs storing, end directly and do not repeat the answer.'))
+      agent.steer(contextMessage('【respire · 目标收尾检查】本轮目标可能已产生新事实、决定、约定或教训。请查同题候选、读其正文，然后改或存（选定父级），标题用事实句。已存过或无需存档则直接结束，不要重复作答。'))
       return
     }
     if (!current.hadUser || current.stored || current.reminded || config.storeNudgeEvery === 0
       || state.rounds % config.storeNudgeEvery !== 0) return
     current.reminded = true
-    agent.steer(contextMessage('【respire · wrap-up check, this round only】If this turn produced new facts, decisions, agreements, or lessons, check same-subject candidates, read them, then update or store with a chosen parent; use a fact-sentence title. If already stored or nothing needs storing, end directly and do not repeat the answer.'))
+    agent.steer(contextMessage('【respire · 收尾检查（仅本轮）】若本轮产生了新事实、决定、约定或教训，请查同题候选、读其正文，然后改或存（选定父级），标题用事实句。已存过或无需存档则直接结束，不要重复作答。'))
   })
 }

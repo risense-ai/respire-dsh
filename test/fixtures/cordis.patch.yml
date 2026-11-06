@@ -1,0 +1,9 @@
+# Copy of the `respire-memory` row in the device profile cordis.patch.yml
+# (real path: ~/.dsh/profiles/web/cordis.patch.yml, device fslong-hasee/linux, 2026-11-06).
+# test/config.test.ts prefers the real file and falls back to this copy where the
+# device profile is absent (e.g. upstream CI), so the asserted values stay checkable.
+- id: respire-memory
+  config:
+    timeoutMs: 60000
+    goalRecall: every
+    goalRecallEvery: 2

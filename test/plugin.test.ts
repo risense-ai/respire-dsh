@@ -22,7 +22,7 @@ function replyOf(value) {
   return { error: null, exitCode: 0, doc: value }
 }
 
-function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] }), goals?: () => { id: string, revision: number, objective: string } | undefined) {
+function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] }), goals?: () => { id: string, revision: number, objective: string } | undefined, statusAnswer = () => ({ status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } })) {
   const ctx = new Context()
   new SystemPrompt(ctx, {})
   const calls = []
@@ -39,9 +39,7 @@ function harness(options = {}, answer = () => ({ status: 'ok', details: [hit] })
     spawn: spec => {
       const args = spec.argv.slice(1)
       calls.push(args)
-      const reply = replyOf(args[1] === 'status'
-        ? { status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } }
-        : answer(args))
+      const reply = replyOf(args[1] === 'status' ? statusAnswer() : answer(args))
       return {
         done: reply.error ? Promise.reject(reply.error) : Promise.resolve({ exitCode: reply.exitCode, signal: null }),
         collected: { stdout: { readFrom: () => ({ text: JSON.stringify(reply.doc), lossy: false }) } },
@@ -76,12 +74,12 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.match(textOf(result), /项目使用原生插件/)
   assert.equal(result.messages[1].source.kind, 'respire')
   assert.equal(result.messages[1].source.form, 'notice')
-  assert.equal(result.messages[1].source.summary, 'Memory: 1 found')
-  assert.match(result.messages[1].content[0].text, /^Memory: 1 found\n/)
+  assert.equal(result.messages[1].source.summary, '记忆：命中 1 条')
+  assert.match(result.messages[1].content[0].text, /^记忆：命中 1 条\n/)
   const rules = (await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text
-  for (const phrase of ['strict JSON', 'omit every status label from the response body', 'independent native notice', 'Only AFTER successfully reading a record body and actually using it', '[basis]', '[ref]', '[history]', 'Default to [ref]', 'not its execution', 'cannot alone upgrade it to [basis]', 'most conservative role', 'DO NOT invent IDs', 'extend an ambiguous prefix', '24 Unicode characters', '(untitled)', '(title hidden)', 'DO NOT show bodies, full IDs', 'Memory: unused', 'not independent plugin measurement', 'DO NOT invent Last save']) assert.ok(rules.includes(phrase), phrase)
+  for (const phrase of ['严格 JSON', '省略一切状态标签', '独立的原生通知', '只有在读过某条正文并确实用上之后', '[basis]', '[ref]', '[history]', '默认 [ref]', '不证明执行', '都不能单独把 [ref] 升为 [basis]', '最保守的角色', '不许编造 ID', '不许延伸歧义前缀', '24 个 Unicode 字符', '（未命名）', '（标题已隐藏）', '不展示正文、完整 ID', '记忆：未使用', '不是插件独立测量', '不许编造「上次存档」']) assert.ok(rules.includes(phrase), phrase)
   assert.deepEqual(h.calls[1], ['--client-only', 'recall', 'Respire 原生插件', '--limit', '5', '--titles', '--json'])
-  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Memory is reference material/)
+  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /记忆仅供参考/)
   const parent = hit.id
   const gate = harness({}, args => {
     assert.deepEqual(args, ['--client-only', 'show', parent, '--json'])
@@ -134,7 +132,7 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   for (const name of ['memory_remember', 'memory_update', 'mcp__renamed__memory_remember', 'mcp__other__memory_update']) {
     const denied = await gate.tool(name, { content: 'fact', importance: 'trivial', parent }, true)
     assert.equal(denied.kind, 'deny')
-    assert.match(denied.reason, /target library cannot be verified/)
+    assert.match(denied.reason, /无法核验该记忆工具的目标库/)
   }
   assert.equal(gate.calls.length, 0)
   assert.equal(gate.dispatched.length, 0, 'monotonic guard must survive a later allow decision')
@@ -173,19 +171,24 @@ test('registers stable rules, appends current-step recall, preserves downstream 
     const before = promotion.calls.length, bodies = promotion.dispatched.length
     const denied = await promotion.tool('bash', `rsrs update ${target} --importance important`)
     assert.equal(denied.kind, 'deny')
-    assert.match(denied.reason, /attach this record/)
+    assert.match(denied.reason, /须先把该记录挂到真实父级下/)
     assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
     assert.equal(promotion.dispatched.length, bodies)
   }
   attached = parent; live = false
   const before = promotion.calls.length, bodies = promotion.dispatched.length
-  assert.equal((await promotion.tool('terminal_send', `rsrs update ${target} --importance important`)).kind, 'deny')
+  const unanswerable = await promotion.tool('terminal_send', `rsrs update ${target} --importance important`)
+  assert.equal(unanswerable.kind, 'deny', 'an unanswerable parent keeps an important update pending')
+  assert.match(unanswerable.reason, /未下发/)
   assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target, parent])
   assert.equal(promotion.dispatched.length, bodies)
   for (const status of ['fail', 'skip']) {
     targetStatus = status
     const before = promotion.calls.length, bodies = promotion.dispatched.length
-    assert.equal((await promotion.tool('bash', `rsrs update ${target} --importance important`)).kind, 'deny')
+    const denied = await promotion.tool('bash', `rsrs update ${target} --importance important`)
+    assert.equal(denied.kind, 'deny', 'a strict write is not dispatched while its target is unverified')
+    assert.match(denied.reason, /未下发/)
+    assert.match(denied.reason, /原样重跑同一条命令/)
     assert.deepEqual(promotion.calls.slice(before).map(args => args[2]), [target])
     assert.equal(promotion.dispatched.length, bodies)
   }
@@ -193,11 +196,86 @@ test('registers stable rules, appends current-step recall, preserves downstream 
   assert.equal((await absent.tool('bash', `rsrs update ${parent} --parent ${parent}`)).kind, 'deny')
   assert.equal(absent.dispatched.length, 0)
   const failed = harness({}, () => new Error('private engine diagnostics'))
-  assert.equal((await failed.tool('pwsh', `& 'C:\\tools\\rsrs.exe' remember fact --importance important --parent ${parent}`)).kind, 'deny')
+  const failedDecision = await failed.tool('pwsh', `& 'C:\\tools\\rsrs.exe' remember fact --importance important --parent ${parent}`)
+  assert.equal(failedDecision.kind, 'deny', 'a strict write is never dispatched while its parent is unverified')
+  assert.match(failedDecision.reason, /未下发/)
+  assert.match(failedDecision.reason, /原样重跑同一条命令/)
   assert.equal(failed.dispatched.length, 0)
+  const mergeUnavailable = await failed.tool('bash', `rsrs --client-only remember --title t "body" --merge-ids ${parent} --parent ${parent}`)
+  assert.equal(mergeUnavailable.kind, 'deny', 'merge counts as strict even without --importance')
+  assert.match(mergeUnavailable.reason, /未下发/)
+  const ordinary = harness({}, () => new Error('private engine diagnostics'))
+  const ordinaryDecision = await ordinary.tool('bash', `rsrs --client-only remember --title t "body" --parent ${parent}`)
+  assert.equal(ordinaryDecision.kind, 'allow', 'a non-strict write is dispatched with a notice')
+  assert.equal(ordinary.dispatched.length, 1)
+  assert.match(ordinary.notices.at(-1).content[0].text, /父级校验已跳过/)
+  assert.doesNotMatch(ordinary.notices.at(-1).content[0].text, /performs its own parent check/)
+  const missingParent = harness({}, args => ({ status: 'ok', summary: { id: 'fedcba98-0000-4000-8000-000000000000' }, details: { entry: { id: 'fedcba98-0000-4000-8000-000000000000', content: 'other record' } } }))
+  for (const command of [`rsrs --client-only remember --title t "body" --parent ${parent}`,
+    `rsrs --client-only remember --title t "body" --parent ${parent} --importance important`]) {
+    const missingDecision = await missingParent.tool('bash', command)
+    assert.equal(missingDecision.kind, 'deny', 'an ok receipt that does not match the parent stays denied')
+    assert.match(missingDecision.reason, /父记录不存在/)
+  }
+  assert.equal(missingParent.dispatched.length, 0)
+  const failingSteer = harness({}, () => new Error('private engine diagnostics'))
+  failingSteer.agent.steer = () => { throw new Error('steer unavailable') }
+  const steerFailed = await failingSteer.tool('bash', `rsrs --client-only remember --title t "body" --parent ${parent}`)
+  assert.equal(steerFailed.kind, 'allow', 'an undeliverable notice must not turn a dispatched write into a failure')
+  assert.equal(failingSteer.dispatched.length, 1)
+  const noAgent = harness({}, () => new Error('private engine diagnostics'))
+  const noAgentSignal = new AbortController().signal
+  const noAgentDecision = await noAgent.ctx.waterfall('tools/pre-execute',
+    { name: 'bash', arguments: { command: `rsrs --client-only remember --title t "body" --parent ${parent}` }, signal: noAgentSignal },
+    async () => ({ kind: 'allow' }))
+  assert.equal(noAgentDecision.kind, 'deny', 'without an agent the skip cannot be reported, so it stays denied')
+  assert.match(noAgentDecision.reason, /无处告知/)
+  assert.doesNotMatch(noAgentDecision.reason, /父记录不存在/)
   const off = harness({ enabled: false }, () => assert.fail('disabled plugin must not query the engine'))
   assert.equal((await off.tool('bash', unsafe[0])).kind, 'allow')
-  for (const fixture of [gate, promotion, absent, failed, off]) await fixture.ctx.fiber.dispose()
+  for (const fixture of [gate, promotion, absent, failed, ordinary, missingParent, failingSteer, off]) await fixture.ctx.fiber.dispose()
+  await h.ctx.fiber.dispose()
+})
+
+test('operation-specific write options fail with fixable instructions', async () => {
+  const h = harness()
+  const content = await h.tool('bash', 'rsrs --client-only remember --title t --content "body text"')
+  assert.equal(content.kind, 'deny')
+  assert.match(content.reason, /remember 的正文是唯一位置参数/)
+  assert.match(content.reason, /rsrs --client-only remember --title "title" "body" --json/)
+  const kind = await h.tool('bash', 'rsrs --client-only remember --title t "body text" --kind context')
+  assert.equal(kind.kind, 'deny')
+  assert.match(kind.reason, /remember 用 --type/)
+  const target = 'abcdef01-0000-4000-8000-000000000000'
+  const type = await h.tool('bash', `rsrs --client-only update ${target} --type context`)
+  assert.equal(type.kind, 'deny')
+  assert.match(type.reason, /update 编辑既有记录，不接受 --type/)
+  const parent = await h.tool('bash', `rsrs --client-only update ${target} --parent ${target}`)
+  assert.equal(parent.kind, 'deny')
+  assert.match(parent.reason, /update 不接受父级变更/)
+  const force = await h.tool('bash', `rsrs --client-only remember --title t "body text" --parent ${target} --importance important --force`)
+  assert.equal(force.kind, 'deny')
+  assert.match(force.reason, /--force 及未支持的父级变更选项不予允许/)
+  assert.equal(h.dispatched.length, 0, 'a wrong option never reaches the shell')
+  const live = harness({}, args => ({ status: 'ok', summary: { id: args[2] }, details: { entry: { id: args[2], content: 'Existing record' } } }))
+  assert.equal((await live.tool('bash', 'rsrs --client-only remember --title t "body text" --importance important --parent ' + target)).kind, 'allow')
+  assert.equal((await live.tool('bash', 'rsrs --client-only update ' + target + ' --title t --content "body text"')).kind, 'allow')
+  assert.equal(live.dispatched.length, 2)
+  await live.ctx.fiber.dispose()
+  await h.ctx.fiber.dispose()
+})
+
+test('a failed status check retries on the next turn instead of sticking', async () => {
+  let statusCalls = 0
+  const h = harness({}, () => ({ status: 'ok', details: [] }), undefined, () => {
+    statusCalls++
+    return statusCalls === 1 ? new Error('runtime down') : { status: 'ok', summary: { session: { has_session: true }, local_alive: 100 } }
+  })
+  const first = await h.step([human('第一轮')])
+  assert.match(textOf(first), /引擎或运行时不可用/)
+  const second = await h.step([human('第二轮')], 2)
+  assert.doesNotMatch(textOf(second), /引擎或运行时不可用/)
+  assert.equal(statusCalls, 2, 'status is retried instead of staying failed forever')
   await h.ctx.fiber.dispose()
 })
 
@@ -227,7 +305,7 @@ test('same text in a new real user message can be recalled again', async () => {
 test('/nomem skips only automatic recall; skill prefix is removed', async () => {
   const h = harness()
   const skipped = await h.step([human('/nomem 项目约定')])
-  assert.equal(skipped.messages.at(-1).source.summary, 'Memory: skipped')
+  assert.equal(skipped.messages.at(-1).source.summary, '记忆：已跳过')
   assert.equal(skipped.messages.at(-1).source.form, 'notice')
   assert.equal(h.calls.length, 1)
   await h.step([human('$skill: respire 项目约定')], 2)
@@ -238,12 +316,12 @@ test('explicit prefix delegates curation without writing and leaves the reminder
   const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
   const result = await h.step([human('记：项目采用 TypeScript')])
   const text = textOf(result)
-  assert.equal(result.messages.at(-1).source.summary, 'Save: needs review')
+  assert.equal(result.messages.at(-1).source.summary, '存档：待复核')
   assert.equal(result.messages.at(-1).source.form, 'notice')
-  assert.match(text, /Save: needs review/)
+  assert.match(text, /存档：待复核/)
   assert.doesNotMatch(text, /Last save:|Earlier save:|Save: verified|Used:/)
-  for (const phrase of ['Nothing was written', 'hook made no write request', 'you MUST read prompt and agent-config', 'show their full bodies', 'Prefer update, then an authorized merge, then attach, then a new record', 'taxonomy --list or tree', 'permitted ONLY AFTER', 'DO NOT retry automatically or claim success', 'Verification does not authorize an automatic retry', 'After every actual write, you MUST read it back with show', 'no justified parent exists, you MUST remain pending', 'DO NOT execute the engineering task']) assert.ok(text.includes(phrase), phrase)
-  assert.doesNotMatch(text, /Saved:|may have been written/)
+  for (const phrase of ['什么都没写', '钩子没有发出任何写请求', '你必须读 prompt 与 agent-config', '并 show 其全文', '优先改，其次经授权的并，再挂，最后才新存', 'taxonomy --list 或 tree', '之后才允许', '不许自动重试或谎称成功', '核验不构成自动重试的授权', '每次实际写入后必须用 show 读回', '没有正当父级就必须保持 pending', '不执行它描述的工程任务']) assert.ok(text.includes(phrase), phrase)
+  assert.doesNotMatch(text, /已存：|可能已经写入/)
   assert.deepEqual(h.calls.map(args => args[1]), ['status'])
   await h.stop()
   assert.equal(h.notices.length, 1)
@@ -253,23 +331,23 @@ test('all prefixes stay pending without writes and duplicate accepted inputs are
   const h = harness({}, () => assert.fail('prefix must not call remember or recall'))
   for (const [index, prefix] of ['记：', '存：', '记录：', '记住：', 'remember:'].entries()) {
     const user = human(`${prefix}项目采用 TypeScript`)
-    assert.match(textOf(await h.step([user], index + 1)), /MUST resolve this storage request in this turn/)
+    assert.match(textOf(await h.step([user], index + 1)), /必须在本轮用 rsrs CLI 完成这条存储/)
     await h.step([user], index + 1)
   }
   assert.deepEqual(h.calls.map(args => args[1]), ['status'])
-  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /Hook pending does not prohibit the first policy-compliant write/)
+  assert.match((await h.ctx.systemPrompt.assemble()).sections.find(section => section.name === 'respire:rules').text, /钩子 pending 不禁止第一次合规写入/)
 })
 
 test('empty store and suspected credentials never reach remember or recall', async () => {
   const h = harness()
   const empty = await h.step([human('记：')])
-  assert.match(textOf(empty), /content is empty|The content is empty/)
-  assert.equal(empty.messages.at(-1).source.summary, 'Save: needs review')
+  assert.match(textOf(empty), /内容为空/)
+  assert.equal(empty.messages.at(-1).source.summary, '存档：待复核')
   const secret = await h.step([human('记：password: synthetic-example')], 2)
-  assert.match(textOf(secret), /contains a credential/)
-  assert.equal(secret.messages.at(-1).source.summary, 'Save: needs review')
+  assert.match(textOf(secret), /疑似含凭据/)
+  assert.equal(secret.messages.at(-1).source.summary, '存档：待复核')
   const skipped = await h.step([human('api_key=synthetic-example')], 3)
-  assert.equal(skipped.messages.at(-1).source.summary, 'Memory: skipped')
+  assert.equal(skipped.messages.at(-1).source.summary, '记忆：已跳过')
   assert.equal(h.calls.length, 1)
 })
 
@@ -306,8 +384,8 @@ test('each agent has independent state and reminder cadence', async () => {
 test('prefix handoff does not misreport an unissued write as unknown when the engine would fail', async () => {
   const h = harness({}, () => new Error('password=synthetic-example'))
   const result = await h.step([human('记：项目采用 TypeScript')])
-  assert.match(textOf(result), /store pending/)
-  assert.doesNotMatch(textOf(result), /store unconfirmed|synthetic-example/)
+  assert.match(textOf(result), /存档待处理/)
+  assert.doesNotMatch(textOf(result), /存档未确认|synthetic-example/)
 })
 
 test('disabled plugin and disabled reminders stay quiet', async () => {
@@ -344,7 +422,7 @@ test('title results respect limits, threshold, budget, and superseded markers', 
   assert.equal(safe.count, 1, 'sensitive titles consume neither result limit nor budget')
   assert.ok(safe.text.includes(hit.title) && safe.text.includes(hit.id.slice(0, 8)))
   assert.doesNotMatch(safe.text, /PRIVATE_TITLE_CANARY|12345678/)
-  assert.match(recallText(doc, 5, 0.5, 1500).text, /superseded/)
+  assert.match(recallText(doc, 5, 0.5, 1500).text, /已被取代/)
   assert.equal(recallText(doc, 5, 0.5, 1500).count, 2)
   assert.equal((recallText(doc, 1, 0, 1500).text.match(/abcdef01/g) ?? []).length, 1)
   assert.equal(recallText(doc, 1, 0, 1500).count, 1)
@@ -353,20 +431,20 @@ test('title results respect limits, threshold, budget, and superseded markers', 
   assert.throws(() => recallText({ status: 'ok', details: {} }, 5, 0, 1500))
   assert.equal(storeText({ status: 'ok' }, 'title').stored, false)
   for (const [response, options, summary] of [
-    [doc, { recallLimit: 1 }, 'Memory: 1 found'],
-    [{ status: 'ok', details: [sensitive, hit] }, { recallLimit: 1, budgetChars: 500 }, 'Memory: 1 found'],
-    [{ status: 'ok', details: [sensitive] }, {}, 'Memory: no match'],
-    [doc, { recallThreshold: 0.5 }, 'Memory: 2 found'],
-    [doc, { recallThreshold: 0.9 }, 'Memory: no match'],
-    [{ status: 'ok', summary: { count: 999 }, details: [] }, {}, 'Memory: no match'],
-    [{ status: 'ok', details: [{ ...hit, id: 'invalid' }] }, {}, 'Memory: no match'],
-    [{ status: 'ok', details: [{ ...hit, title: 'x'.repeat(2000) }] }, { budgetChars: 200 }, 'Memory: no match'],
-    [{ status: 'skip', summary: { count: 0 } }, {}, 'Memory: no match'],
-    [{ status: 'skip' }, {}, 'Memory: skipped'],
-    [{ status: 'skip', summary: { count: 999 } }, {}, 'Memory: skipped'],
-    [doc, { minPromptChars: 100 }, 'Memory: skipped'],
-    [{ status: 'ok', details: {} }, {}, 'Memory: unavailable'],
-    [new Error('private diagnostics'), {}, 'Memory: unavailable'],
+    [doc, { recallLimit: 1 }, '记忆：命中 1 条'],
+    [{ status: 'ok', details: [sensitive, hit] }, { recallLimit: 1, budgetChars: 500 }, '记忆：命中 1 条'],
+    [{ status: 'ok', details: [sensitive] }, {}, '记忆：无命中'],
+    [doc, { recallThreshold: 0.5 }, '记忆：命中 2 条'],
+    [doc, { recallThreshold: 0.9 }, '记忆：无命中'],
+    [{ status: 'ok', summary: { count: 999 }, details: [] }, {}, '记忆：无命中'],
+    [{ status: 'ok', details: [{ ...hit, id: 'invalid' }] }, {}, '记忆：无命中'],
+    [{ status: 'ok', details: [{ ...hit, title: 'x'.repeat(2000) }] }, { budgetChars: 200 }, '记忆：无命中'],
+    [{ status: 'skip', summary: { count: 0 } }, {}, '记忆：无命中'],
+    [{ status: 'skip' }, {}, '记忆：已跳过'],
+    [{ status: 'skip', summary: { count: 999 } }, {}, '记忆：已跳过'],
+    [doc, { minPromptChars: 100 }, '记忆：已跳过'],
+    [{ status: 'ok', details: {} }, {}, '记忆：不可用'],
+    [new Error('private diagnostics'), {}, '记忆：不可用'],
   ]) {
     const fixture = harness(options, () => response)
     const result = await fixture.step([human('recall project agreement')])
@@ -377,7 +455,7 @@ test('title results respect limits, threshold, budget, and superseded markers', 
     assert.ok(notices[0].content[0].text.startsWith(summary + '\n'))
     assert.doesNotMatch(notices[0].content[0].text, /private diagnostics|Used:|Last save:|Save: verified/)
     assert.ok(fixture.calls.every(args => ['status', 'recall'].includes(args[1])))
-    if (summary.includes('found')) assert.ok(notices[0].content[0].text.length <= (options.budgetChars ?? 1500))
+    if (summary.includes('命中')) assert.ok(notices[0].content[0].text.length <= (options.budgetChars ?? 1500))
     await fixture.ctx.fiber.dispose()
   }
 })
@@ -386,13 +464,13 @@ test('store receipts follow the result-state contract (warn written, pending rel
   // warn + valid id = WRITTEN after commit — never a failure, never a re-send
   const warned = storeText({ status: 'warn', summary: { id: '22222222-2222-4222-8222-222222222222' }, errors: ['parent (cause) cannot be resolved; stored independently'] }, 'warned title')
   assert.equal(warned.stored, true)
-  assert.match(warned.text, /Saved with warnings/)
+  assert.match(warned.text, /已存但有警告/)
   assert.match(warned.text, /parent \(cause\) cannot be resolved/)
-  assert.match(warned.text, /do not write the same record again/)
+  assert.match(warned.text, /不要重复写入同一记录/)
   // pending keeps engine-suggested actions (merge > attach > new), not just parent/force
   const pending = storeText({ status: 'pending', items: [{ name: 'aaaabbbb', value: 'similarity=88% title=stub candidate' }], actions: ['rsrs remember "<combined content>" --merge-ids "aaaabbbb"', 'rsrs remember "<content>" --force to write as new entry'] }, 'pending title')
   assert.equal(pending.stored, false)
-  assert.match(pending.text, /Nothing was written/)
+  assert.match(pending.text, /什么都没写/)
   assert.match(pending.text, /aaaabbbb: similarity=88%/)
   assert.match(pending.text, /--merge-ids/)
   assert.match(pending.text, /--force/)
@@ -407,25 +485,25 @@ test('store receipts follow the result-state contract (warn written, pending rel
 test('missing or invalid ids are unknown receipts; only fail claims not-accepted; skip stays not-stored', () => {
   const missing = storeText({ status: 'ok' }, 'title')
   assert.equal(missing.stored, false)
-  assert.match(missing.text, /store unconfirmed/)
-  assert.match(missing.text, /unknown/)
-  assert.match(missing.text, /never retry automatically/)
-  assert.doesNotMatch(missing.text, /did not accept/)
+  assert.match(missing.text, /存档未确认/)
+  assert.match(missing.text, /结果未知/)
+  assert.match(missing.text, /绝不自动重试/)
+  assert.doesNotMatch(missing.text, /未接受/)
   const garbage = storeText({ status: 'warn', summary: { id: '../../etc/passwd' } }, 'title')
   assert.equal(garbage.stored, false)
-  assert.match(garbage.text, /store unconfirmed/)
-  assert.doesNotMatch(garbage.text, /store failed|did not accept/)
+  assert.match(garbage.text, /存档未确认/)
+  assert.doesNotMatch(garbage.text, /存档失败|未接受/)
   const failed = storeText({ status: 'fail', errors: ['parent missing'] }, 'title')
   assert.equal(failed.stored, false)
-  assert.match(failed.text, /did not accept/)
+  assert.match(failed.text, /未接受/)
   const skipped = storeText({ status: 'skip' }, 'title')
   assert.equal(skipped.stored, false)
-  assert.match(skipped.text, /not stored/)
-  assert.doesNotMatch(skipped.text, /unknown/)
+  assert.match(skipped.text, /未存档/)
+  assert.doesNotMatch(skipped.text, /未知/)
   const unrecognized = storeText({ status: 'confused' }, 'title')
   assert.equal(unrecognized.stored, false)
-  assert.match(unrecognized.text, /store unconfirmed/)
-  assert.match(unrecognized.text, /unknown/)
+  assert.match(unrecognized.text, /存档未确认/)
+  assert.match(unrecognized.text, /结果未知/)
 })
 
 test('record ids outside the engine whitelist (UUID or long hex) are unknown, never a write credential', () => {
@@ -435,9 +513,9 @@ test('record ids outside the engine whitelist (UUID or long hex) are unknown, ne
     for (const status of ['ok', 'warn']) {
       const receipt = storeText({ status, summary: { id } }, 'title')
       assert.equal(receipt.stored, false, `${status} receipt with id ${id} must not confirm a write`)
-      assert.match(receipt.text, /store unconfirmed/)
-      assert.match(receipt.text, /unknown/)
-      assert.doesNotMatch(receipt.text, /Saved/)
+      assert.match(receipt.text, /存档未确认/)
+      assert.match(receipt.text, /结果未知/)
+      assert.doesNotMatch(receipt.text, /已存/)
     }
     // recall hits carrying such ids are dropped instead of advertised
     assert.deepEqual(recallText({ status: 'ok', details: [{ ...hit, id }] }, 5, 0, 1500), { text: '', count: 0 })
@@ -446,7 +524,7 @@ test('record ids outside the engine whitelist (UUID or long hex) are unknown, ne
   for (const id of [12345678, ['abcdef01-0000-4000-8000-000000000000'], { v: 1 }, null, true]) {
     const receipt = storeText({ status: 'ok', summary: { id } }, 'title')
     assert.equal(receipt.stored, false)
-    assert.match(receipt.text, /store unconfirmed/)
+    assert.match(receipt.text, /存档未确认/)
   }
   // engine-shaped ids still pass: UUID, 16-hex, 32-hex
   assert.equal(storeText({ status: 'ok', summary: { id: 'abcdef01-0000-4000-8000-000000000000' } }, 'title').stored, true)
@@ -467,7 +545,7 @@ test('goal rounds recall through the goal service and dedupe by goal revision', 
   const first = await h.step([goal(goalRound('修复文档门禁', 1), 1)])
   assert.equal(first.startsRequestSeries, true)
   assert.match(textOf(first), /项目使用原生插件/)
-  assert.equal(first.messages.at(-1).source.summary, 'Memory: 1 found')
+  assert.equal(first.messages.at(-1).source.summary, '记忆：命中 1 条')
   const recalls = () => h.calls.filter(args => args[1] === 'recall')
   assert.equal(recalls().length, 1)
   assert.equal(recalls()[0][2], '修复文档门禁')
@@ -498,6 +576,27 @@ test('goalRecall every recalls round 1 and every N rounds', async () => {
   await h.ctx.fiber.dispose()
 })
 
+test('cordis respire-memory row drives apply: every gate over rounds 1-3, defaults stay first', async () => {
+  // The exact config from the device cordis.patch.yml respire-memory row (60000 / every / 2)
+  // passed through apply(); timeoutMs itself is not observable offline, so its value is
+  // asserted via resolveConfig in config.test.ts — apply() calls that same path.
+  const every = harness({ timeoutMs: 60000, goalRecall: 'every', goalRecallEvery: 2 },
+    () => ({ status: 'ok', details: [hit] }), () => ({ id: 'goal-1', revision: 1, objective: '持续目标' }))
+  for (const round of [1, 2, 3]) await every.step([goal(goalRound('持续目标', round), round)], round)
+  const everyQueries = every.calls.filter(args => args[1] === 'recall').map(args => args[2])
+  assert.deepEqual(everyQueries, ['持续目标', '持续目标'],
+    'every/2: round 1 recalls, round 2 recalls (2 % 2 === 0), round 3 skips')
+  await every.ctx.fiber.dispose()
+
+  const defaults = harness({}, () => ({ status: 'ok', details: [hit] }),
+    () => ({ id: 'goal-1', revision: 1, objective: '持续目标' }))
+  for (const round of [1, 2, 3]) await defaults.step([goal(goalRound('持续目标', round), round)], round)
+  const defaultQueries = defaults.calls.filter(args => args[1] === 'recall').map(args => args[2])
+  assert.deepEqual(defaultQueries, ['持续目标'],
+    'default goalRecall first: one recall per goal revision, rounds 2-3 do not re-recall')
+  await defaults.ctx.fiber.dispose()
+})
+
 test('goal rounds parse the retained objective when no goal service is mounted', async () => {
   const h = harness({ goalRecall: 'first' }, () => ({ status: 'ok', details: [hit] }))
   const result = await h.step([goal(goalRound('回退目标', 1), 1)])
@@ -512,7 +611,7 @@ test('credential-like goal objectives are skipped without an engine call', async
   const h = harness({ goalRecall: 'first' }, () => assert.fail('secret objective must not recall'),
     () => ({ id: 'goal-1', revision: 1, objective: 'api_key=sk-abcdefghijklmnop' }))
   const result = await h.step([goal(goalRound('api_key=sk-abcdefghijklmnop', 1), 1)])
-  assert.equal(result.messages.at(-1).source.summary, 'Memory: skipped')
+  assert.equal(result.messages.at(-1).source.summary, '记忆：已跳过')
   assert.deepEqual(h.calls.map(args => args[1]), ['status'])
   await h.ctx.fiber.dispose()
 })
@@ -529,7 +628,7 @@ test('goal nudge is opt-in and throttled', async () => {
   await on.step([goal(goalRound('目标', 1), 1)])
   await on.stop(1)
   assert.equal(on.notices.length, 1)
-  assert.match(on.notices[0].content[0].text, /goal wrap-up check/)
+  assert.match(on.notices[0].content[0].text, /目标收尾检查/)
   await on.ctx.fiber.dispose()
 
   const every2 = harness({ goalRecall: 'first', goalNudgeEvery: 2 }, () => ({ status: 'ok', details: [hit] }), view)
