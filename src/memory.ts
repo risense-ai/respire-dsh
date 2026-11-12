@@ -157,7 +157,11 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
   if (!writes.length) return
   const write = writes[0]!
   if (complex || writes.length !== 1 || write.start !== (tokens[0] === '&' ? 1 : 0)) {
-    return deny('the recognized write uses compound, dynamic or unsupported shell syntax.')
+    const hints: string[] = []
+    if (sawRedir) hints.push('a memory write must be one literal rsrs command with no pipes or redirections; check command output in a separate command')
+    if (sawNewline) hints.push('keep the whole command on one line; do not use trailing or inter-argument newlines')
+    if (dynamic) hints.push('the text contains $ or quotes the shell would expand; wrap the body and title in single quotes')
+    return deny(hints.length ? hints.join('; ') + '.' : 'the recognized write uses compound, dynamic or unsupported shell syntax.')
   }
   const values = new Map<string, string>()
   const positional: string[] = []
