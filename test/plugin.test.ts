@@ -549,3 +549,78 @@ test('rejected goal steps do not recall', async () => {
   assert.equal(h.calls.length, 0)
   await h.ctx.fiber.dispose()
 })
+
+// --- Obstacle-recall hooks (T15: L1/L2 detection + L3 hold) ---------------
+
+const obstacleExec = (h, command = 'grep pattern missing-file') => ({
+  name: 'bash', arguments: { command }, agent: h.agent, signal: new AbortController().signal,
+})
+const failOnce = (h, text = 'grep: missing-file: No such file or directory\n[exit code: 2]') =>
+  h.ctx.waterfall('tools/post-execute', obstacleExec(h),
+    { kind: 'allow', isError: false, content: [{ type: 'text', text }] },
+    async () => ({ kind: 'allow' }))
+
+test('obstacle recall: a failed tool call injects the next-step reminder', async () => {
+  const h = harness({})
+  await failOnce(h)
+  const text = textOf(await h.step([human('继续排查这个报错')]))
+  assert.match(text, /遇障先翻忆/)
+  assert.doesNotMatch(text, /重复失败/)
+  await h.ctx.fiber.dispose()
+})
+
+test('obstacle recall: repeat warning fires only inside the configured window', async () => {
+  const h = harness({})
+  await failOnce(h)
+  const first = textOf(await h.step([human('第一次失败后')]))
+  assert.match(first, /遇障先翻忆/)
+  assert.doesNotMatch(first, /重复失败/)
+
+  const realNow = Date.now
+  try {
+    let offset = 0
+    Date.now = () => realNow.call(Date) + offset
+    offset = 400_000 // beyond obstacleWindowSec=300 → the earlier signature is pruned
+    await failOnce(h)
+    const expired = textOf(await h.step([human('窗口外第二次')]))
+    assert.match(expired, /遇障先翻忆/)
+    assert.doesNotMatch(expired, /重复失败/)
+    offset += 1_000 // same signature again, now inside the window → L2
+    await failOnce(h)
+    const repeated = textOf(await h.step([human('窗口内第三次')]))
+    assert.match(repeated, /重复失败 ×2/)
+  } finally {
+    Date.now = realNow
+  }
+  await h.ctx.fiber.dispose()
+})
+
+test('obstacle recall: L3 hold blocks writes until an actual recall', async () => {
+  const h = harness({ obstacleHoldWrites: true, obstacleHoldAfter: 2, obstacleRecall: false })
+  await failOnce(h, 'boom\n[exit code: 1]')
+  await failOnce(h, 'boom\n[exit code: 1]')
+  const held = await h.tool('bash', 'rsrs remember diary --importance trivial')
+  assert.equal(held.kind, 'deny')
+  assert.match(held.reason, /暂缓/)
+  // L3 alone (obstacleRecall off) must not inject L1/L2 reminders
+  assert.doesNotMatch(textOf(await h.step([human('尝试继续')])), /遇障先翻忆/)
+  // an actual recall releases the hold; read/show would not
+  assert.equal((await h.tool('bash', 'rsrs recall remember --titles --json')).kind, 'allow')
+  assert.equal((await h.tool('bash', 'rsrs remember diary --importance trivial')).kind, 'allow')
+  await h.ctx.fiber.dispose()
+})
+
+test('obstacle recall: L3 hold expires after its TTL without a recall', async () => {
+  const h = harness({ obstacleHoldWrites: true, obstacleHoldAfter: 2, obstacleHoldTtlSec: 1800, obstacleRecall: false })
+  await failOnce(h, 'boom\n[exit code: 1]')
+  await failOnce(h, 'boom\n[exit code: 1]')
+  assert.equal((await h.tool('bash', 'rsrs remember diary --importance trivial')).kind, 'deny')
+  const realNow = Date.now
+  try {
+    Date.now = () => realNow.call(Date) + 1_801_000
+    assert.equal((await h.tool('bash', 'rsrs remember diary --importance trivial')).kind, 'allow')
+  } finally {
+    Date.now = realNow
+  }
+  await h.ctx.fiber.dispose()
+})
