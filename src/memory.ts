@@ -43,38 +43,56 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
     }
     return end
   }
-  let word = '', quote = '', started = false, complex = false
+  let word = '', quote = '', started = false, complex = false, dynamic = false, sawRedir = false, sawNewline = false
   const flush = () => { if (started) tokens.push(word); word = ''; started = false }
   for (let i = 0; i < command.length; i++) {
     const char = command[i]!
     if (quote !== "'" && !escaped(i) && ((char === '`' && shell !== 'powershell') || (char === '$' && command[i + 1] === '('))) {
       const start = i + (char === '`' ? 1 : 2), end = codeEnd(start, char)
       embedded.push({ code: command.slice(start, end), shell })
-      word += command.slice(i, end + 1); started = true; complex = true
+      word += command.slice(i, end + 1); started = true; complex = dynamic = true
       i = end
       continue
     }
     if (quote) {
       if (char === quote) quote = ''
-      else {
+      else if (quote === '"' && shell === 'bash' && char === '\\' && i + 1 < command.length) {
+        // In bash a backslash escapes the next char inside double quotes (" \$ \` \\
+        // and backslash-newline continuation): the pair is literal shell text, never
+        // dynamic, and never closes the quote early. PowerShell escapes with the
+        // backtick, not the backslash, so only bash gets this treatment here.
+        const next = command[i + 1]!
+        if (next !== '\n' && next !== '\r') word += char + next
+        i++
+      } else {
         word += char
-        if (quote === '"' && (/[$\x60]/.test(char) || (char === '\\' && /["$\x60]/.test(command[i + 1] ?? '')))) complex = true
+        if (quote === '"' && /[$\x60]/.test(char)) complex = dynamic = true
       }
     } else if (char === "'" || char === '"') {
       quote = char; started = true
     } else if (/\s/.test(char)) {
       flush()
-      if (char === '\n' || char === '\r') { complex = true; tokens.push(';') }
+      // A newline only separates commands when real content follows it; trailing
+      // newline/whitespace at the end of the tool argument is inert and must not deny.
+      if ((char === '\n' || char === '\r') && /\S/.test(command.slice(i + 1))) { complex = sawNewline = true; tokens.push(';') }
     } else if (/[;&|<>(){}]/.test(char)) {
       flush()
       if (char === '&' && ['<', '>'].includes(tokens.at(-1) ?? '')) tokens[tokens.length - 1] += '&'
       else if (char === '>' && tokens.at(-1) === '&') tokens[tokens.length - 1] = '&>'
       else tokens.push(char)
+      if (char === '|' || char === '<' || char === '>') sawRedir = true
       if (!(char === '&' && tokens.length === 1)) complex = true
+    } else if (char === '\\' && i + 1 < command.length && shell !== 'powershell') {
+      // Outside quotes a backslash escapes the next char (shell: \$ \" \; and
+      // backslash-newline line continuation): the pair is literal text, never compound.
+      const next = command[i + 1]!
+      if (next !== '\n' && next !== '\r') word += char + next
+      started = true
+      i++
     } else {
       word += char; started = true
-      if (/[$\x60#]/.test(char) || (char === '@' && /['"]/.test(command[i + 1] ?? ''))
-        || (char === '\\' && /[\s"'$;&|<>(){}\x60]/.test(command[i + 1] ?? ''))) complex = true
+      if (/[$\x60]/.test(char)) complex = dynamic = true
+      else if (char === '#' || (char === '@' && /['"]/.test(command[i + 1] ?? ''))) complex = true
     }
   }
   flush()
@@ -139,7 +157,11 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
   if (!writes.length) return
   const write = writes[0]!
   if (complex || writes.length !== 1 || write.start !== (tokens[0] === '&' ? 1 : 0)) {
-    return deny('the recognized write uses compound, dynamic or unsupported shell syntax.')
+    const hints: string[] = []
+    if (sawRedir) hints.push('a memory write must be one literal rsrs command with no pipes or redirections; check command output in a separate command')
+    if (sawNewline) hints.push('keep the whole command on one line; do not use trailing or inter-argument newlines')
+    if (dynamic) hints.push('the text contains $ or quotes the shell would expand; wrap the body and title in single quotes')
+    return deny(hints.length ? hints.join('; ') + '.' : 'the recognized write uses compound, dynamic or unsupported shell syntax.')
   }
   const values = new Map<string, string>()
   const positional: string[] = []
