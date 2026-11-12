@@ -143,7 +143,7 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
   }
   const values = new Map<string, string>()
   const positional: string[] = []
-  const flags = new Set(['--title', '--content', '--tags', '--project', '--computer', '--emotion',
+  const flags = new Set(['--title', '--content', '--content-file', '--tags', '--project', '--computer', '--emotion',
     '--importance', '--parent', '--type', '--kind', '--merge-ids', '--supersedes', '--see-also',
     '--summary', '--source-refs', '--valid-until', '--review-at', '--artifact', '--model-task-id', '--progress-id'])
   for (let i = 0; i < write.args.length; i++) {
@@ -153,7 +153,7 @@ export function memoryWrite(command: unknown, executable = 'rsrs', shell: 'bash'
     const equal = arg.indexOf('=')
     const flag = equal === -1 ? arg : arg.slice(0, equal)
     if (flag === '--help' || flag === '-h') return
-    if (['--json', '--client-only', '--clear-summary', '--clear-source-refs', '--clear-valid-until', '--clear-review-at', '--clear-artifact'].includes(flag)) continue
+    if (['--json', '--client-only', '--clear-summary', '--clear-source-refs', '--clear-valid-until', '--clear-review-at', '--clear-artifact', '--drop-legacy-metadata'].includes(flag)) continue
     if (['--force', '--clear-parent', '--no-parent'].includes(flag)) return deny('force and unsupported parent-changing options are not permitted.')
     if (!flags.has(flag)) return deny('a write option cannot be validated.')
     const value = equal === -1 ? write.args[++i] : arg.slice(equal + 1)
