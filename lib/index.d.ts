@@ -11,6 +11,7 @@ declare module '@deepseek-ai/dsh-llm' {
 export declare const name = "respire";
 export declare const inject: string[];
 export type GoalRecall = 'off' | 'first' | 'every';
+export type RulesLocale = 'en' | 'zh' | 'bilingual';
 export interface Config {
     enabled?: boolean;
     rsrsPath?: string;
@@ -22,6 +23,7 @@ export interface Config {
     goalRecall?: GoalRecall;
     goalRecallEvery?: number;
     goalNudgeEvery?: number;
+    rulesLocale?: RulesLocale;
     timeoutMs?: number;
 }
 export declare const Config: z<Config>;

@@ -5,7 +5,7 @@ import type { ContextFormed, UserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import z from '@deepseek-ai/schemastery'
-import { containsSecret, currentParent, MCP_WRITE_DENIAL, memoryToolWrite, memoryWrite, parentExists, recallText, record, RULES, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
+import { containsSecret, currentParent, MCP_WRITE_DENIAL, memoryToolWrite, memoryWrite, parentExists, recallText, record, RULES, RULES_ZH, SKILL_PREFIX, SKIP_PREFIX, STORE_PREFIX } from './memory.js'
 import { RsrsError, runRsrs } from './rsrs.js'
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -19,6 +19,8 @@ export const inject = ['agents', 'systemPrompt', 'subprocess', 'workingDirectory
 
 export type GoalRecall = 'off' | 'first' | 'every'
 
+export type RulesLocale = 'en' | 'zh' | 'bilingual'
+
 export interface Config {
   enabled?: boolean
   rsrsPath?: string
@@ -30,6 +32,7 @@ export interface Config {
   goalRecall?: GoalRecall
   goalRecallEvery?: number
   goalNudgeEvery?: number
+  rulesLocale?: RulesLocale
   timeoutMs?: number
 }
 
@@ -44,6 +47,7 @@ export const Config: z<Config> = z.object({
   goalRecall: z.union([z.const('off'), z.const('first'), z.const('every')]).default('first'),
   goalRecallEvery: z.number().default(1),
   goalNudgeEvery: z.number().default(0),
+  rulesLocale: z.union([z.const('en'), z.const('zh'), z.const('bilingual')]).default('en'),
   timeoutMs: z.number().default(20000),
 })
 
@@ -139,7 +143,7 @@ interface ToolsContext {
 export function apply(ctx: Context, options: Config = {}): void {
   const config = { enabled: true, rsrsPath: 'rsrs', recallLimit: 5, recallThreshold: 0,
     budgetChars: 1500, minPromptChars: 2, storeNudgeEvery: 1, goalRecall: 'first' as GoalRecall,
-    goalRecallEvery: 1, goalNudgeEvery: 0, timeoutMs: 20000, ...options }
+    goalRecallEvery: 1, goalNudgeEvery: 0, rulesLocale: 'en' as RulesLocale, timeoutMs: 20000, ...options }
   for (const [key, minimum, maximum] of [
     ['recallLimit', 1, 20], ['budgetChars', 200, 20000], ['minPromptChars', 1, 1000],
     ['storeNudgeEvery', 0, 1000], ['goalRecallEvery', 1, 1000], ['goalNudgeEvery', 0, 1000],
@@ -150,6 +154,7 @@ export function apply(ctx: Context, options: Config = {}): void {
     }
   }
   if (!['off', 'first', 'every'].includes(config.goalRecall)) throw new TypeError('respire: invalid goalRecall')
+  if (!['en', 'zh', 'bilingual'].includes(config.rulesLocale)) throw new TypeError('respire: invalid rulesLocale')
   if (!Number.isFinite(config.recallThreshold) || config.recallThreshold < 0 || config.recallThreshold > 1) {
     throw new TypeError('respire: invalid recallThreshold')
   }
@@ -214,7 +219,7 @@ export function apply(ctx: Context, options: Config = {}): void {
     return reason ? { kind: 'deny', reason } : decision
   })
 
-  ctx.systemPrompt.section({ name: 'respire:rules', order: 850, text: RULES, interpolate: false })
+  ctx.systemPrompt.section({ name: 'respire:rules', order: 850, text: config.rulesLocale === 'zh' ? RULES_ZH : config.rulesLocale === 'bilingual' ? RULES + '\n\n' + RULES_ZH : RULES, interpolate: false })
 
   ctx.on('agent/pre-step', async ({ agent, turn, signal }, next): Promise<PreStepDecision> => {
     const decision = await next()
