@@ -34,6 +34,12 @@ export interface Config {
   goalNudgeEvery?: number
   rulesLocale?: RulesLocale
   timeoutMs?: number
+  obstacleRecall?: boolean
+  obstacleWindowSec?: number
+  obstacleRepeat?: number
+  obstacleHoldWrites?: boolean
+  obstacleHoldAfter?: number
+  obstacleHoldTtlSec?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -49,6 +55,12 @@ export const Config: z<Config> = z.object({
   goalNudgeEvery: z.number().default(0),
   rulesLocale: z.union([z.const('en'), z.const('zh'), z.const('bilingual')]).default('en'),
   timeoutMs: z.number().default(20000),
+  obstacleRecall: z.boolean().default(true),
+  obstacleWindowSec: z.number().default(300),
+  obstacleRepeat: z.number().default(2),
+  obstacleHoldWrites: z.boolean().default(false),
+  obstacleHoldAfter: z.number().default(3),
+  obstacleHoldTtlSec: z.number().default(1800),
 })
 
 interface GoalMessageSource {
@@ -75,12 +87,20 @@ interface TurnState {
   reminded: boolean
 }
 
+interface ObstacleState {
+  recent: { sig: string, at: number }[]
+  pending?: { level: 1 | 2, text: string }
+  consecutive: number
+  holdSince?: number
+}
+
 interface AgentState {
   checked: boolean
   ready: boolean
   rounds: number
   goalKey?: string
   turn?: TurnState
+  obstacle?: ObstacleState
 }
 
 function contextMessage(text: string, summary?: string): UserMessage {
@@ -90,6 +110,67 @@ function contextMessage(text: string, summary?: string): UserMessage {
 
 function messageText(message: UserMessage): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
+}
+
+// Obstacle-recall hard mechanism: classify one completed tool outcome as a failure.
+// Denied calls reach tools/post-execute too (the harness routes a pre-execute deny
+// through the same pipeline), throwing tools set isError, and bash reports a non-zero
+// exit only as an `[exit code: N]` marker in its content — never as isError.
+function obstacleFailure(result: unknown, downstream: unknown): { text: string, deny: boolean } | undefined {
+  const textOf = (shape: Record<string, unknown>): string => {
+    const reason = [shape.reason, shape.feedback, shape.message]
+      .find(value => typeof value === 'string' && value) as string | undefined
+    if (reason) return reason
+    if (!Array.isArray(shape.content)) return ''
+    return shape.content.flatMap(block => {
+      const entry = record(block)
+      return entry && entry.type === 'text' && typeof entry.text === 'string' ? [entry.text] : []
+    }).join('\n')
+  }
+  for (const candidate of [result, downstream]) {
+    const shape = record(candidate)
+    if (!shape) continue
+    const kind = typeof shape.kind === 'string' ? shape.kind : ''
+    const deny = kind === 'deny' || kind === 'block'
+    const failed = deny || kind === 'error' || kind === 'aborted' || shape.isError === true
+    const text = textOf(shape)
+    if (failed && text) return { text, deny }
+    if (/\[exit code: [1-9]\d*\]/.test(text)) return { text, deny: false }
+  }
+  return undefined
+}
+
+// Deny signatures key on the rsrs operation (the write body differs per call but the
+// root cause does not); bash failures key on the command hint plus the exit marker.
+function obstacleSignature(exec: MemoryExecution, failure: { text: string, deny: boolean }, command: unknown): string {
+  const first = obstacleFirstLine(failure.text)
+  if (failure.deny) {
+    const operation = typeof command === 'string'
+      ? command.match(/\b(remember|update|recall|show|tree|taxonomy)\b/)?.[0] : undefined
+    return `${exec.name}|rsrs ${operation ?? 'write'}|${first.slice(0, 160)}`
+  }
+  const hint = (typeof command === 'string' ? command : '').replace(/\s+/g, ' ').trim().slice(0, 80)
+  return `${exec.name}|${hint}|${first.match(/\[exit code: [1-9]\d*\]/)?.[0] ?? first.slice(0, 120)}`
+}
+
+function obstacleFirstLine(text: string): string {
+  return text.split('\n').map(line => line.trim()).find(line => line) ?? ''
+}
+
+function obstacleNotice(name: string, failure: string): string {
+  return `【respire · 遇障先翻忆】上一轮工具调用失败（${name}：${obstacleFirstLine(failure).slice(0, 160)}）。在改代码、改配置或重试之前，你必须先 recall（2–3 组词，三组皆空方算无记忆）：
+  1) rsrs recall "<组件+症状>" --titles --json
+  2) rsrs recall "<报错原文片段>" --titles --json
+  3) rsrs recall "<环境名>" --titles --json
+命中则循既证之法，弃法须陈三；未命中先读现场、立假设、最小步验证，禁无假设连试，两试无进展即停手，三试受阻须三件齐备（卡点＋已试诸法＋当前假设）。`
+}
+
+function obstacleRepeatNotice(count: number, windowSec: number, failure: string): string {
+  return `【respire · 遇障先翻忆 · 重复失败 ×${count}】同一错误签名在 ${windowSec} 秒内出现第 ${count} 次：
+"${failure.slice(0, 300)}"
+这极可能是已有记忆覆盖的坑：禁止同法继续重试。先执行
+  rsrs recall "<报错原文片段>" --titles --json
+再按命中记录行动；三组关键词皆空则按受阻三件（卡点＋已试诸法＋当前假设）回报，不得空手抛问。`
 }
 
 function goalSource(message: UserMessage): GoalMessageSource | undefined {
@@ -138,16 +219,21 @@ interface ToolDecision { kind: string, reason?: string, [key: string]: unknown }
 interface ToolsContext {
   tools: { guard(check: (exec: MemoryExecution) => string | undefined): unknown }
   on(event: 'tools/pre-execute', listener: (exec: MemoryExecution, next: () => Promise<ToolDecision>) => Promise<ToolDecision>): unknown
+  on(event: 'tools/post-execute', listener: (exec: MemoryExecution, result: unknown, next: () => Promise<ToolDecision>) => Promise<ToolDecision>): unknown
 }
 
 export function apply(ctx: Context, options: Config = {}): void {
   const config = { enabled: true, rsrsPath: 'rsrs', recallLimit: 5, recallThreshold: 0,
     budgetChars: 1500, minPromptChars: 2, storeNudgeEvery: 1, goalRecall: 'first' as GoalRecall,
-    goalRecallEvery: 1, goalNudgeEvery: 0, rulesLocale: 'en' as RulesLocale, timeoutMs: 20000, ...options }
+    goalRecallEvery: 1, goalNudgeEvery: 0, rulesLocale: 'en' as RulesLocale, timeoutMs: 20000,
+    obstacleRecall: true, obstacleWindowSec: 300, obstacleRepeat: 2,
+    obstacleHoldWrites: false, obstacleHoldAfter: 3, obstacleHoldTtlSec: 1800, ...options }
   for (const [key, minimum, maximum] of [
     ['recallLimit', 1, 20], ['budgetChars', 200, 20000], ['minPromptChars', 1, 1000],
     ['storeNudgeEvery', 0, 1000], ['goalRecallEvery', 1, 1000], ['goalNudgeEvery', 0, 1000],
     ['timeoutMs', 1, 120000],
+    ['obstacleWindowSec', 10, 3600], ['obstacleRepeat', 2, 10],
+    ['obstacleHoldAfter', 2, 20], ['obstacleHoldTtlSec', 60, 86400],
   ] as const) {
     if (!Number.isSafeInteger(config[key]) || config[key] < minimum || config[key] > maximum) {
       throw new TypeError(`respire: invalid ${key}`)
@@ -159,6 +245,9 @@ export function apply(ctx: Context, options: Config = {}): void {
     throw new TypeError('respire: invalid recallThreshold')
   }
   if (!config.rsrsPath.trim()) throw new TypeError('respire: rsrsPath must not be empty')
+  if (typeof config.obstacleRecall !== 'boolean' || typeof config.obstacleHoldWrites !== 'boolean') {
+    throw new TypeError('respire: invalid obstacleRecall/obstacleHoldWrites')
+  }
   if (!config.enabled) return
 
   const lifetime = new AbortController()
@@ -191,9 +280,29 @@ export function apply(ctx: Context, options: Config = {}): void {
     if (decision.kind !== 'allow') return decision
     if (memoryToolWrite(exec.name)) return { kind: 'deny', reason: MCP_WRITE_DENIAL }
     const command = commandOf(exec)
+    // A recall observation clears the L3 hold (read/show deliberately does not:
+    // the whole point is forcing an actual recall before the next write).
+    if (typeof command === 'string' && /\brecall\b/.test(command)
+      && /(?:^|[\s/\\'"=])(?:rsrs|respire)(?:\.exe|\.cmd)?(?:\s|$)/i.test(command)) {
+      const obstacle = exec.agent ? stateOf(exec.agent).obstacle : undefined
+      if (obstacle) { obstacle.consecutive = 0; obstacle.holdSince = undefined }
+    }
     const write = memoryWrite(command, config.rsrsPath, shellOf(exec))
     if (!write) return decision
     let reason = write.reason
+    // L3 (obstacleHoldWrites, default off): after consecutive failures reach the
+    // threshold, hold rsrs writes until one recall; TTL expiry releases lazily here.
+    if (!reason && config.obstacleHoldWrites && exec.agent) {
+      const obstacle = stateOf(exec.agent).obstacle
+      if (obstacle?.holdSince !== undefined) {
+        if (Date.now() - obstacle.holdSince >= config.obstacleHoldTtlSec * 1000) {
+          obstacle.holdSince = undefined
+          obstacle.consecutive = 0
+        } else {
+          reason = '【respire 拦截】连续失败已达阈值，写操作暂缓：先执行 rsrs recall "<组件+症状>" --titles --json（2–3 组词）确认无既有记忆，再重试写入。read/show 不算解除；obstacleHoldWrites 关闭或 TTL 到期后自动放行。'
+        }
+      }
+    }
     if (!reason && (write.parent || write.target)) {
       const signal = AbortSignal.any([exec.signal, lifetime.signal, AbortSignal.timeout(Math.min(config.timeoutMs, 5000))])
       try {
@@ -219,6 +328,40 @@ export function apply(ctx: Context, options: Config = {}): void {
     return reason ? { kind: 'deny', reason } : decision
   })
 
+  // Obstacle-recall hard mechanism (L1/L2): observe final outcomes here. Denied
+  // calls reach this waterfall as well, so the plugin's own guard denials count —
+  // exactly the loop this mechanism exists to break. Classification is shape-tolerant
+  // (result param OR downstream decision); `tools/result` (observe-only) stays the
+  // documented fallback if a future Harness stops routing denials through here.
+  toolHost.on('tools/post-execute', async (exec, result, next) => {
+    const downstream = await next()
+    if (!exec.agent || (!config.obstacleRecall && !config.obstacleHoldWrites)) return downstream
+    const state = stateOf(exec.agent)
+    const obstacle = state.obstacle ?? (state.obstacle = { recent: [], consecutive: 0 })
+    const now = Date.now()
+    obstacle.recent = obstacle.recent.filter(entry => now - entry.at <= config.obstacleWindowSec * 1000)
+    const failure = obstacleFailure(result, downstream)
+    if (!failure) {
+      obstacle.consecutive = 0
+      return downstream
+    }
+    const sig = obstacleSignature(exec, failure, commandOf(exec))
+    obstacle.consecutive++
+    const hits = obstacle.recent.filter(entry => entry.sig === sig).length + 1
+    obstacle.recent.push({ sig, at: now })
+    if (config.obstacleHoldWrites && obstacle.holdSince === undefined
+      && obstacle.consecutive >= config.obstacleHoldAfter) obstacle.holdSince = now
+    if (config.obstacleRecall) {
+      const level = hits >= config.obstacleRepeat ? 2 : 1
+      if (!obstacle.pending || level > obstacle.pending.level) {
+        obstacle.pending = { level, text: level === 2
+          ? obstacleRepeatNotice(hits, config.obstacleWindowSec, failure.text)
+          : obstacleNotice(exec.name, failure.text) }
+      }
+    }
+    return downstream
+  })
+
   ctx.systemPrompt.section({ name: 'respire:rules', order: 850, text: config.rulesLocale === 'zh' ? RULES_ZH : config.rulesLocale === 'bilingual' ? RULES + '\n\n' + RULES_ZH : RULES, interpolate: false })
 
   ctx.on('agent/pre-step', async ({ agent, turn, signal }, next): Promise<PreStepDecision> => {
@@ -234,6 +377,11 @@ export function apply(ctx: Context, options: Config = {}): void {
     }
     const current = state.turn
     const additions: UserMessage[] = []
+    // L1/L2 injection: deliver any pending obstacle reminder on the next step.
+    if (state.obstacle?.pending) {
+      additions.push(contextMessage(state.obstacle.pending.text))
+      state.obstacle.pending = undefined
+    }
     const combined = AbortSignal.any([signal, lifetime.signal])
     const call = async (args: string[]) => {
       const cwd = await ctx.workingDirectory.ensure(agent, combined)
@@ -263,6 +411,7 @@ export function apply(ctx: Context, options: Config = {}): void {
         const { text, count } = recallText(doc, config.recallLimit, config.recallThreshold,
           config.budgetChars - `Memory: ${config.recallLimit} found\n`.length)
         state.ready = true
+        if (state.obstacle) { state.obstacle.consecutive = 0; state.obstacle.holdSince = undefined }
         const summary = doc.status === 'skip' && record(doc.summary)?.count !== 0
           ? 'Memory: skipped' : count ? `Memory: ${count} found` : 'Memory: no match'
         return { text, summary }

@@ -25,6 +25,12 @@ export interface Config {
     goalNudgeEvery?: number;
     rulesLocale?: RulesLocale;
     timeoutMs?: number;
+    obstacleRecall?: boolean;
+    obstacleWindowSec?: number;
+    obstacleRepeat?: number;
+    obstacleHoldWrites?: boolean;
+    obstacleHoldAfter?: number;
+    obstacleHoldTtlSec?: number;
 }
 export declare const Config: z<Config>;
 export declare function apply(ctx: Context, options?: Config): void;
